@@ -1,5 +1,3 @@
-import os
-import json
 import time
 import asyncio
 import aiohttp
@@ -15,26 +13,11 @@ from telegram.ext import (
 from keep_alive import keep_alive
 
 # ================= CẤU HÌNH =================
-BOT_TOKEN = os.getenv("BOT_TOKEN")  # Đặt BOT_TOKEN trong biến môi trường
-ADMINS_FILE = "admins.json"
+BOT_TOKEN = "8080338995:AAHitAzhTUUb1XL0LB44BiJmOCgulA4fx38"  # Thay bằng token bot của bạn
+ADMINS = [5736655322]           # Thay bằng user_id admin
 AUTO_JOBS = {}
-USER_COOLDOWN = {}  # Lưu last_time của từng user
-BUFF_INTERVAL = 900  # 15 phút = 900 giây
-
-# ================= LOAD / SAVE ADMINS =================
-def load_admins():
-    global ADMINS
-    try:
-        with open(ADMINS_FILE, "r") as f:
-            ADMINS = json.load(f)
-    except FileNotFoundError:
-        ADMINS = []
-
-def save_admins():
-    with open(ADMINS_FILE, "w") as f:
-        json.dump(ADMINS, f)
-
-load_admins()
+USER_COOLDOWN = {}             # Lưu last_time của từng user
+BUFF_INTERVAL = 900            # 15 phút = 900 giây
 
 # ================= Keep Alive =================
 keep_alive()  # Giữ bot online
@@ -61,9 +44,7 @@ async def adm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if is_admin(user_id):
         await update.message.reply_text(
-            f"✅ Bạn là admin\n"
-            f"User ID: {user_id}\n"
-            f"Admins hiện tại: {ADMINS}"
+            f"✅ Bạn là admin\nUser ID: {user_id}\nAdmins hiện tại: {ADMINS}"
         )
     else:
         await update.message.reply_text("❌ Bạn không có quyền dùng lệnh này.")
@@ -90,7 +71,6 @@ async def addadmin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     ADMINS.append(new_admin)
-    save_admins()
     await update.message.reply_text(f"✅ Đã thêm admin mới: {new_admin}\nADMINS hiện tại: {ADMINS}")
 
 # ================= Gọi API =================
@@ -102,8 +82,6 @@ async def call_buff_api(username: str):
                 response.raise_for_status()
                 data = await response.json()
                 return data
-        except aiohttp.ClientError as e:
-            raise RuntimeError(f"Lỗi kết nối API: {e}")
         except Exception as e:
             raise RuntimeError(f"Lỗi API: {e}")
 
@@ -111,9 +89,9 @@ async def call_buff_api(username: str):
 def format_result(data: dict):
     return (
         f"✅ Tăng follow thành công\n"
-        f"👤 @{data.get('username', 'Unknown')}\n\n"
+        f"👤 @{data.get('username', 'Unknown')}\n"
         f"UID: {data.get('uid', 'Không có')}\n"
-        f"Nickname: {data.get('nickname', 'Không có')}\n\n"
+        f"Nickname: {data.get('nickname', 'Không có')}\n"
         f"FOLLOW BAN ĐẦU: {data.get('follow_base', '0')}\n"
         f"FOLLOW ĐÃ TĂNG: +{data.get('follow_added', '0')}\n"
         f"FOLLOW HIỆN TẠI: {data.get('follow_current', '0')}"
