@@ -3,12 +3,12 @@ import asyncio
 import aiohttp
 import logging
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, filters
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from keep_alive import keep_alive
 
 # ================= CẤU HÌNH =================
 BOT_TOKEN = "8080338995:AAHitAzhTUUb1XL0LB44BiJmOCgulA4fx38"  # Thay bằng token bot
-ADMINS = [5736655322]               # Thay bằng Telegram user_id admin
+ADMINS = [5736655322]  # Thay bằng Telegram user_id admin
 AUTO_JOBS = {}
 USER_COOLDOWN = {}
 BUFF_INTERVAL = 900  # 15 phút
@@ -27,30 +27,37 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Lệnh:\n"
         "/buff <username>\n"
         "/autobuff <username> <giây>\n"
+        "/autobuffme\n"
         "/stopbuff\n"
         "/listbuff\n"
         "/adm\n"
         "/addadmin <user_id>"
     )
 
-# ================= Gọi API =================
+# ================= Gọi API (session chung) =================
+session = None
+
 async def call_buff_api(username: str):
+    global session
+    if session is None:
+        session = aiohttp.ClientSession()
     url = f"https://abcdxyz310107.x10.mx/apifl.php?username={username}"
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url, timeout=15) as response:
-            response.raise_for_status()
-            return await response.json()
+    async with session.get(url, timeout=15) as response:
+        response.raise_for_status()
+        return await response.json()
 
 # ================= Format kết quả =================
 def format_result(data: dict):
+    if not data.get("success"):
+        return f"❌ Lỗi: {data.get('message','Không xác định')}"
+    
     return (
-        f"✅ Tăng follow thành công\n"
+        f"✅ {data.get('message','Thành công')}\n"
         f"👤 @{data.get('username','Unknown')}\n"
-        f"UID: {data.get('uid','Không có')}\n"
         f"Nickname: {data.get('nickname','Không có')}\n"
-        f"FOLLOW BAN ĐẦU: {data.get('follow_base','0')}\n"
-        f"FOLLOW ĐÃ TĂNG: +{data.get('follow_added','0')}\n"
-        f"FOLLOW HIỆN TẠI: {data.get('follow_current','0')}"
+        f"FOLLOW BAN ĐẦU: {data.get('followers_before','0')}\n"
+        f"FOLLOW ĐÃ TĂNG: +{data.get('followers_increased','0')}\n"
+        f"FOLLOW HIỆN TẠI: {data.get('followers_now','0')}"
     )
 
 # ================= /buff =================
@@ -121,6 +128,29 @@ async def autobuff(update: Update, context: ContextTypes.DEFAULT_TYPE):
     AUTO_JOBS[user_id] = job
     await update.message.reply_text(f"✅ Bật auto buff @{username} mỗi {interval} giây.")
 
+# ================= /autobuffme =================
+async def autobuffme(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    username = update.effective_user.username
+
+    if not username:
+        await update.message.reply_text("❌ Bạn chưa đặt username Telegram, không thể auto buff.")
+        return
+
+    interval = 900  # 15 phút
+
+    if user_id in AUTO_JOBS:
+        await update.message.reply_text("⚠️ Bạn đã bật auto buff rồi. Dùng /stopbuff trước.")
+        return
+
+    job = context.job_queue.run_repeating(
+        auto_buff_job, interval=interval, first=0,
+        data={"username": username, "chat_id": update.effective_chat.id},
+        name=str(user_id)
+    )
+    AUTO_JOBS[user_id] = job
+    await update.message.reply_text(f"✅ Bật auto buff @{username} mỗi 15 phút.")
+
 # ================= /stopbuff =================
 async def stopbuff(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -143,16 +173,48 @@ async def listbuff(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg += f"👤 Admin {uid} - @{username} - {interval} giây\n"
     await update.message.reply_text(msg)
 
+# ================= /adm =================
+async def adm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not is_admin(user_id):
+        await update.message.reply_text("❌ Chỉ admin mới xem được danh sách admin.")
+        return
+    msg = "📋 Danh sách Admin:\n" + "\n".join([str(a) for a in ADMINS])
+    await update.message.reply_text(msg)
+
+# ================= /addadmin =================
+async def addadmin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not is_admin(user_id):
+        await update.message.reply_text("❌ Chỉ admin mới thêm admin được.")
+        return
+    if not context.args:
+        await update.message.reply_text("❌ Dùng: /addadmin <user_id>")
+        return
+    try:
+        new_admin = int(context.args[0])
+        if new_admin in ADMINS:
+            await update.message.reply_text("⚠️ Người này đã là admin.")
+            return
+        ADMINS.append(new_admin)
+        await update.message.reply_text(f"✅ Thêm admin thành công: {new_admin}")
+    except ValueError:
+        await update.message.reply_text("❌ user_id không hợp lệ.")
+
 # ================= MAIN =================
 def main():
     keep_alive()
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
+    # Command Handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("buff", buff))
     app.add_handler(CommandHandler("autobuff", autobuff))
+    app.add_handler(CommandHandler("autobuffme", autobuffme))
     app.add_handler(CommandHandler("stopbuff", stopbuff))
     app.add_handler(CommandHandler("listbuff", listbuff))
+    app.add_handler(CommandHandler("adm", adm))
+    app.add_handler(CommandHandler("addadmin", addadmin))
 
     logging.info("🤖 Bot 24/7 đang chạy...")
     app.run_polling()
