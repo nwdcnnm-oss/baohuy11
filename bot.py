@@ -86,10 +86,11 @@ async def buff(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Lỗi: {e}")
 
 # ================= AUTO BUFF JOB =================
-async def auto_buff_job(context: ContextTypes.DEFAULT_TYPE):
-    job = context.job
-    username = job.data["username"]
-    chat_id = job.data["chat_id"]
+async def auto_buff_job(context):
+    job_data = context.job.data
+    username = job_data["username"]
+    chat_id = job_data["chat_id"]
+
     try:
         data = await call_buff_api(username)
         await context.bot.send_message(chat_id=chat_id, text=format_result(data))
@@ -121,7 +122,9 @@ async def autobuff(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     job = context.job_queue.run_repeating(
-        auto_buff_job, interval=interval, first=0,
+        auto_buff_job,
+        interval=interval,
+        first=0,
         data={"username": username, "chat_id": update.effective_chat.id},
         name=str(user_id)
     )
@@ -144,7 +147,9 @@ async def autobuffme(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     job = context.job_queue.run_repeating(
-        auto_buff_job, interval=interval, first=0,
+        auto_buff_job,
+        interval=interval,
+        first=0,
         data={"username": username, "chat_id": update.effective_chat.id},
         name=str(user_id)
     )
