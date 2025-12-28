@@ -2,7 +2,6 @@ import time
 import asyncio
 import aiohttp
 import logging
-import os
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
@@ -10,13 +9,14 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
+from keep_alive import keep_alive
 
 # ================= CẤU HÌNH =================
-BOT_TOKEN = os.getenv("8080338995:AAHitAzhTUUb1XL0LB44BiJmOCgulA4fx38")  # Thay bằng token bot hoặc biến môi trường
-ADMINS = [5736655322]           # Thay bằng user_id admin
-AUTO_JOBS = {}
-USER_COOLDOWN = {}             # Lưu last_time của từng user
-BUFF_INTERVAL = 900            # 15 phút = 900 giây
+BOT_TOKEN = "8080338995:AAHitAzhTUUb1XL0LB44BiJmOCgulA4fx38"  # Thay bằng token bot
+ADMINS = [5736655322]               # Thay bằng user_id admin
+AUTO_JOBS = {}                      # user_id: job
+USER_COOLDOWN = {}                  # user_id: last_time
+BUFF_INTERVAL = 900                 # 15 phút = 900 giây
 
 # ================= Logging =================
 logging.basicConfig(
@@ -31,7 +31,7 @@ def is_admin(user_id):
 # ================= /start =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🤖 Bot Buff Telegram\n\n"
+        "🤖 Bot Buff Telegram 24/7\n\n"
         "📌 Lệnh:\n"
         "/buff <username> – Buff 1 lần (15 phút/lần, mọi người dùng)\n"
         "/autobuff <username> <time> – Auto buff (giây) (chỉ admin)\n"
@@ -99,7 +99,7 @@ def format_result(data: dict):
         f"FOLLOW HIỆN TẠI: {data.get('follow_current', '0')}"
     )
 
-# ================= /buff (mọi người, cooldown 15 phút) =================
+# ================= /buff =================
 async def buff(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not context.args:
@@ -128,7 +128,7 @@ async def buff(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Lỗi: {e}")
 
-# ================= AUTO BUFF JOB (chỉ admin) =================
+# ================= AUTO BUFF JOB =================
 async def auto_buff_job(context: ContextTypes.DEFAULT_TYPE):
     job = context.job
     username = job.data["username"]
@@ -142,7 +142,7 @@ async def auto_buff_job(context: ContextTypes.DEFAULT_TYPE):
         logging.error(f"[AUTO BUFF] Lỗi: {e}")
         await context.bot.send_message(chat_id=chat_id, text=f"❌ Lỗi auto buff: {e}")
 
-# ================= /autobuff (chỉ admin) =================
+# ================= /autobuff =================
 async def autobuff(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not is_admin(user_id):
@@ -182,7 +182,7 @@ async def autobuff(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"✅ Đã bật AUTO BUFF\n👤 Username: {username}\n⏱️ Mỗi {interval} giây"
     )
 
-# ================= /stopbuff (chỉ admin) =================
+# ================= /stopbuff =================
 async def stopbuff(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not is_admin(user_id):
@@ -196,7 +196,7 @@ async def stopbuff(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("⚠️ Bạn chưa bật auto buff.")
 
-# ================= /listbuff (chỉ admin) =================
+# ================= /listbuff =================
 async def listbuff(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not is_admin(user_id):
@@ -217,19 +217,21 @@ async def listbuff(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ================= MAIN =================
 def main():
+    keep_alive()  # Giữ bot online 24/7
+
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     # Command handlers
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("buff", buff))  # mở cho mọi người
+    app.add_handler(CommandHandler("buff", buff))
     app.add_handler(CommandHandler("autobuff", autobuff))
     app.add_handler(CommandHandler("stopbuff", stopbuff))
     app.add_handler(CommandHandler("listbuff", listbuff))
     app.add_handler(CommandHandler("adm", adm))
     app.add_handler(CommandHandler("addadmin", addadmin))
-    app.add_handler(filters.TEXT & ~filters.COMMAND, lambda u, c: None)  # bỏ qua tin nhắn text
+    app.add_handler(filters.TEXT & ~filters.COMMAND, lambda u, c: None)
 
-    logging.info("🤖 Bot đang chạy...")
+    logging.info("🤖 Bot đang chạy 24/7...")
     app.run_polling()
 
 if __name__ == "__main__":
