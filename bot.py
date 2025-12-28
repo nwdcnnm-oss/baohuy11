@@ -60,6 +60,15 @@ def format_result(data: dict):
         f"FOLLOW HIỆN TẠI: {data.get('followers_now','0')}"
     )
 
+# ================= TASK CHẠY BẤM /buff =================
+async def run_buff_task(username, update):
+    await asyncio.sleep(20)  # Delay 20 giây trước khi call API
+    try:
+        data = await call_buff_api(username)
+        await update.message.reply_text(format_result(data))
+    except Exception as e:
+        await update.message.reply_text(f"❌ Lỗi: {e}")
+
 # ================= /buff =================
 async def buff(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -77,20 +86,15 @@ async def buff(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     USER_COOLDOWN[user_id] = now
     await update.message.reply_text("⏳ Chờ 20 giây để buff...")
-    await asyncio.sleep(20)
 
-    try:
-        data = await call_buff_api(username)
-        await update.message.reply_text(format_result(data))
-    except Exception as e:
-        await update.message.reply_text(f"❌ Lỗi: {e}")
+    # Tạo task riêng để không block bot
+    asyncio.create_task(run_buff_task(username, update))
 
 # ================= AUTO BUFF JOB =================
 async def auto_buff_job(context):
     job_data = context.job.data
     username = job_data["username"]
     chat_id = job_data["chat_id"]
-
     try:
         data = await call_buff_api(username)
         await context.bot.send_message(chat_id=chat_id, text=format_result(data))
@@ -135,7 +139,6 @@ async def autobuff(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def autobuffme(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     username = update.effective_user.username
-
     if not username:
         await update.message.reply_text("❌ Bạn chưa đặt username Telegram, không thể auto buff.")
         return
