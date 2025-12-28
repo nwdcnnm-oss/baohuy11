@@ -12,7 +12,7 @@ ADMINS = [5736655322]
 AUTO_JOBS = {}
 USER_COOLDOWN = {}
 USER_LAST_FOLLOWERS = {}  # Lưu followers cuối cùng
-API_DELAY = 30  # Delay trước khi call API
+API_DELAY = 40  # Delay trước khi call API
 
 # ================= Logging =================
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -43,7 +43,7 @@ async def call_buff_api_check(username: str):
         session = aiohttp.ClientSession()
     url = f"https://abcdxyz310107.x10.mx/apifl.php?username={username}"
     try:
-        async with session.get(url, timeout=15) as response:
+        async with session.get(url, timeout=36) as response:
             response.raise_for_status()
             data = await response.json()
             if data.get("success") and "followers_now" in data:
