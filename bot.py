@@ -3,31 +3,42 @@ import asyncio
 import aiohttp
 import logging
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    ContextTypes,
+)
 from keep_alive import keep_alive
 
-# ================= CẤU HÌNH =================
-BOT_TOKEN = "8080338995:AAHitAzhTUUb1XL0LB44BiJmOCgulA4fx38"
+# ================= CONFIG =================
+BOT_TOKEN = "8080338995:AAHitAzhTUUb1XL0LB44BiJmOCgulA4fx38"   # ❗ THAY TOKEN MỚI
 ADMINS = [5736655322]
+
+API_DELAY = 36
+API_TIMEOUT = 45
+MIN_INTERVAL = 60
+
 AUTO_JOBS = {}
 USER_COOLDOWN = {}
-USER_LAST_FOLLOWERS = {}  # Lưu followers cuối cùng
-API_DELAY = 36  # Delay trước khi call API
+USER_LAST_FOLLOWERS = {}
 
-# ================= Logging =================
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+# ================= LOG =================
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s"
+)
+log = logging.getLogger(__name__)
 
-# ================= Kiểm tra admin =================
-def is_admin(user_id):
-    return user_id in ADMINS
+# ================= ADMIN =================
+def is_admin(uid: int) -> bool:
+    return uid in ADMINS
 
 # ================= /start =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🤖 Bot Buff Telegram 24/7\n"
-        "Lệnh:\n"
+        "🤖 BOT BUFF TELEGRAM 24/7\n\n"
         "/buff <username>\n"
-        "/autobuff <username> [giây]\n"
+        "/autobuff <username> [giây] (admin)\n"
         "/autobuffme <giây>\n"
         "/stopbuff\n"
         "/listbuff\n"
@@ -35,212 +46,221 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/addadmin <user_id>"
     )
 
-# ================= Session aiohttp =================
+# ================= AIOHTTP =================
 session = None
-async def call_buff_api_check(username: str):
+
+async def get_session():
     global session
-    if session is None:
+    if session is None or session.closed:
         session = aiohttp.ClientSession()
+    return session
+
+async def call_buff_api(username: str) -> dict:
     url = f"https://abcdxyz310107.x10.mx/apifl.php?username={username}"
     try:
-        async with session.get(url, timeout=36) as response:
-            response.raise_for_status()
-            data = await response.json()
-            if data.get("success") and "followers_now" in data:
+        sess = await get_session()
+        async with sess.get(url, timeout=API_TIMEOUT) as r:
+            r.raise_for_status()
+            data = await r.json()
+            if data.get("success"):
                 return data
-            return {"success": False, "message": "API trả dữ liệu không hợp lệ"}
+            return {"success": False, "message": "API trả dữ liệu lỗi"}
     except Exception as e:
+        log.error(f"API ERROR: {e}")
         return {"success": False, "message": str(e)}
 
-# ================= Format kết quả =================
-def format_result(data: dict):
-    if not data.get("success"):
-        return f"❌ Lỗi: {data.get('message','Không xác định')}"
+# ================= FORMAT =================
+def format_result(d: dict) -> str:
     return (
-        f"✅ {data.get('message','Thành công')}\n"
-        f"👤 @{data.get('username','Unknown')}\n"
-        f"Nickname: {data.get('nickname','Không có')}\n"
-        f"FOLLOW BAN ĐẦU: {data.get('followers_before','0')}\n"
-        f"FOLLOW ĐÃ TĂNG: +{data.get('followers_increased','0')}\n"
-        f"FOLLOW HIỆN TẠI: {data.get('followers_now','0')}"
+        f"✅ Auto buff thành công cho @{d.get('username','?')}\n\n"
+        f"Nickname: {d.get('nickname','.')}\n"
+        f"Follow trước: {d.get('followers_before','0')}\n"
+        f"Follow tăng: +{d.get('followers_increased','0')}\n"
+        f"Follow hiện tại: {d.get('followers_now','0')}"
     )
 
-# ================= TASK /buff =================
-async def run_buff_task(username, update, user_id):
-    await asyncio.sleep(API_DELAY)
-    data = await call_buff_api_check(username)
-    await update.message.reply_text(format_result(data))
-    if data.get("success"):
-        USER_LAST_FOLLOWERS[user_id] = int(data.get("followers_now", 0))
-
+# ================= /buff =================
 async def buff(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
+    uid = update.effective_user.id
+
     if not context.args:
-        await update.message.reply_text("❌ Dùng: /buff <username>")
+        await update.message.reply_text("❌ /buff <username>")
         return
-    username = context.args[0]
+
     now = time.time()
-    last_time = USER_COOLDOWN.get(user_id, 0)
-    if now - last_time < 30:  # giới hạn buff thủ công 30s
-        remain = int(30 - (now - last_time))
-        await update.message.reply_text(f"⏳ Chờ {remain} giây mới buff lại.")
+    if now - USER_COOLDOWN.get(uid, 0) < 30:
+        await update.message.reply_text("⏳ Chờ 30s rồi buff tiếp.")
         return
-    USER_COOLDOWN[user_id] = now
-    await update.message.reply_text(f"⏳ Chờ {API_DELAY} giây để buff...")
-    asyncio.create_task(run_buff_task(username, update, user_id))
 
-# ================= TASK AUTO BUFF =================
-async def run_auto_buff(username, chat_id, context, user_id):
+    USER_COOLDOWN[uid] = now
+    username = context.args[0]
+
+    await update.message.reply_text("⏳ Đang buff, vui lòng chờ...")
     await asyncio.sleep(API_DELAY)
-    data = await call_buff_api_check(username)
+
+    data = await call_buff_api(username)
     if not data.get("success"):
-        await context.bot.send_message(chat_id=chat_id, text=f"❌ Auto buff lỗi: {data.get('message')}")
+        await update.message.reply_text(f"❌ Lỗi: {data.get('message')}")
         return
 
-    followers_now = int(data.get("followers_now", 0))
-    last_followers = USER_LAST_FOLLOWERS.get(user_id, 0)
+    USER_LAST_FOLLOWERS[uid] = int(data["followers_now"])
+    await update.message.reply_text(format_result(data))
 
-    if followers_now != last_followers:
-        USER_LAST_FOLLOWERS[user_id] = followers_now
-        await context.bot.send_message(chat_id=chat_id, text=format_result(data))
+# ================= AUTO BUFF CORE =================
+async def run_auto_buff(username: str, chat_id: int, context, uid: int):
+    await asyncio.sleep(API_DELAY)
+    data = await call_buff_api(username)
 
-# ================= /autobuff (Admin) =================
+    if not data.get("success"):
+        await context.bot.send_message(chat_id, f"❌ Auto buff lỗi: {data.get('message')}")
+        return
+
+    now_follow = int(data["followers_now"])
+    last = USER_LAST_FOLLOWERS.get(uid, 0)
+
+    if now_follow != last:
+        USER_LAST_FOLLOWERS[uid] = now_follow
+        await context.bot.send_message(chat_id, format_result(data))
+
+# ================= JOB =================
+async def auto_job(context: ContextTypes.DEFAULT_TYPE):
+    job = context.job
+    await run_auto_buff(
+        username=job.data["username"],
+        chat_id=job.data["chat_id"],
+        context=context,
+        uid=int(job.name)
+    )
+
+# ================= /autobuff =================
 async def autobuff(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if not is_admin(user_id):
-        await update.message.reply_text("❌ Chỉ admin mới dùng được lệnh này.")
+    uid = update.effective_user.id
+    if not is_admin(uid):
+        await update.message.reply_text("❌ Chỉ admin.")
         return
-    if len(context.args) == 0:
-        await update.message.reply_text("❌ Dùng: /autobuff <username> [giây]")
+
+    if not context.args:
+        await update.message.reply_text("❌ /autobuff <username> [giây]")
         return
 
     username = context.args[0]
+    interval = int(context.args[1]) if len(context.args) > 1 else 900
 
-    # Mặc định 15 phút nếu không nhập giây
-    if len(context.args) >= 2:
-        try:
-            interval = int(context.args[1])
-            if interval < 60:
-                await update.message.reply_text("⚠️ Interval tối thiểu 60 giây.")
-                return
-        except ValueError:
-            await update.message.reply_text("❌ Thời gian phải là số giây.")
-            return
-    else:
-        interval = 900  # 15 phút mặc định
-
-    if user_id in AUTO_JOBS:
-        await update.message.reply_text("⚠️ Bạn đã bật auto buff rồi. Dùng /stopbuff trước.")
+    if interval < MIN_INTERVAL:
+        await update.message.reply_text("⚠️ Interval ≥ 60s")
         return
 
-    async def auto_buff_task(context_inner):
-        chat_id = update.effective_chat.id
-        asyncio.create_task(run_auto_buff(username, chat_id, context_inner, user_id))
+    if uid in AUTO_JOBS:
+        await update.message.reply_text("⚠️ Đã bật auto buff.")
+        return
 
     job = context.job_queue.run_repeating(
-        auto_buff_task,
+        auto_job,
         interval=interval,
         first=0,
-        data={"username": username, "chat_id": update.effective_chat.id},
-        name=str(user_id)
+        name=str(uid),
+        data={
+            "username": username,
+            "chat_id": update.effective_chat.id
+        }
     )
 
-    AUTO_JOBS[user_id] = job
-    USER_LAST_FOLLOWERS[user_id] = 0
-    await update.message.reply_text(f"✅ Bật auto buff @{username} mỗi {interval} giây (chỉ báo khi followers thay đổi).")
+    AUTO_JOBS[uid] = job
+    USER_LAST_FOLLOWERS[uid] = 0
 
-# ================= /autobuffme (User) =================
+    await update.message.reply_text(
+        f"✅ Auto buff @{username}\n⏱ Mỗi {interval} giây"
+    )
+
+# ================= /autobuffme =================
 async def autobuffme(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
+    uid = update.effective_user.id
     username = update.effective_user.username
+
     if not username:
-        await update.message.reply_text("❌ Bạn chưa đặt username Telegram.")
-        return
-    if len(context.args) == 0:
-        await update.message.reply_text("❌ Dùng: /autobuffme <giây>")
-        return
-    try:
-        interval = int(context.args[0])
-        if interval < 60:
-            await update.message.reply_text("⚠️ Interval tối thiểu 60 giây.")
-            return
-    except ValueError:
-        await update.message.reply_text("❌ Thời gian phải là số giây.")
-        return
-    if user_id in AUTO_JOBS:
-        await update.message.reply_text("⚠️ Bạn đã bật auto buff rồi. Dùng /stopbuff trước.")
+        await update.message.reply_text("❌ Bạn chưa có username.")
         return
 
-    async def auto_buff_task(context_inner):
-        chat_id = update.effective_chat.id
-        asyncio.create_task(run_auto_buff(username, chat_id, context_inner, user_id))
+    if not context.args:
+        await update.message.reply_text("❌ /autobuffme <giây>")
+        return
+
+    interval = int(context.args[0])
+    if interval < MIN_INTERVAL:
+        await update.message.reply_text("⚠️ Interval ≥ 60s")
+        return
+
+    if uid in AUTO_JOBS:
+        await update.message.reply_text("⚠️ Đã bật auto buff.")
+        return
 
     job = context.job_queue.run_repeating(
-        auto_buff_task,
+        auto_job,
         interval=interval,
         first=0,
-        data={"username": username, "chat_id": update.effective_chat.id},
-        name=str(user_id)
+        name=str(uid),
+        data={
+            "username": username,
+            "chat_id": update.effective_chat.id
+        }
     )
 
-    AUTO_JOBS[user_id] = job
-    USER_LAST_FOLLOWERS[user_id] = 0
-    await update.message.reply_text(f"✅ Bật auto buff @{username} mỗi {interval} giây (chỉ báo khi followers thay đổi).")
+    AUTO_JOBS[uid] = job
+    USER_LAST_FOLLOWERS[uid] = 0
+
+    await update.message.reply_text(f"✅ Auto buff @{username} mỗi {interval}s")
 
 # ================= /stopbuff =================
 async def stopbuff(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    job = AUTO_JOBS.pop(user_id, None)
+    uid = update.effective_user.id
+    job = AUTO_JOBS.pop(uid, None)
     if job:
         job.schedule_removal()
-        await update.message.reply_text("🛑 Dừng auto buff thành công.")
+        await update.message.reply_text("🛑 Đã dừng auto buff.")
     else:
-        await update.message.reply_text("⚠️ Bạn chưa bật auto buff.")
+        await update.message.reply_text("⚠️ Chưa bật auto buff.")
 
 # ================= /listbuff =================
 async def listbuff(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not AUTO_JOBS:
-        await update.message.reply_text("⚠️ Không có auto buff nào đang chạy.")
+        await update.message.reply_text("⚠️ Không có auto buff.")
         return
-    msg = "📋 Danh sách AUTO BUFF:\n"
+
+    msg = "📋 AUTO BUFF:\n"
     for uid, job in AUTO_JOBS.items():
-        username = job.data["username"]
-        interval = job.interval
-        msg += f"👤 Admin/User {uid} - @{username} - {interval} giây\n"
+        interval = int(job.trigger.interval.total_seconds())
+        msg += f"👤 {uid} | @{job.data['username']} | {interval}s\n"
+
     await update.message.reply_text(msg)
 
-# ================= /adm =================
+# ================= ADMIN =================
 async def adm(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if not is_admin(user_id):
-        await update.message.reply_text("❌ Chỉ admin mới xem được danh sách admin.")
+    if not is_admin(update.effective_user.id):
         return
-    msg = "📋 Danh sách Admin:\n" + "\n".join([str(a) for a in ADMINS])
-    await update.message.reply_text(msg)
+    await update.message.reply_text("📋 Admin:\n" + "\n".join(map(str, ADMINS)))
 
-# ================= /addadmin =================
 async def addadmin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if not is_admin(user_id):
-        await update.message.reply_text("❌ Chỉ admin mới thêm admin được.")
-        return
-    if not context.args:
-        await update.message.reply_text("❌ Dùng: /addadmin <user_id>")
+    if not is_admin(update.effective_user.id):
         return
     try:
-        new_admin = int(context.args[0])
-        if new_admin in ADMINS:
-            await update.message.reply_text("⚠️ Người này đã là admin.")
-            return
-        ADMINS.append(new_admin)
-        await update.message.reply_text(f"✅ Thêm admin thành công: {new_admin}")
-    except ValueError:
-        await update.message.reply_text("❌ user_id không hợp lệ.")
+        uid = int(context.args[0])
+        if uid not in ADMINS:
+            ADMINS.append(uid)
+            await update.message.reply_text(f"✅ Đã thêm admin {uid}")
+    except:
+        await update.message.reply_text("❌ user_id không hợp lệ")
+
+# ================= SHUTDOWN =================
+async def shutdown(app):
+    global session
+    if session:
+        await session.close()
 
 # ================= MAIN =================
 def main():
     keep_alive()
     app = ApplicationBuilder().token(BOT_TOKEN).build()
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("buff", buff))
     app.add_handler(CommandHandler("autobuff", autobuff))
@@ -249,7 +269,9 @@ def main():
     app.add_handler(CommandHandler("listbuff", listbuff))
     app.add_handler(CommandHandler("adm", adm))
     app.add_handler(CommandHandler("addadmin", addadmin))
-    logging.info("🤖 Bot 24/7 đang chạy...")
+
+    app.post_shutdown = shutdown
+    log.info("🤖 Bot đang chạy 24/7...")
     app.run_polling()
 
 if __name__ == "__main__":
