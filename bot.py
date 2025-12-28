@@ -43,7 +43,7 @@ async def call_buff_api(username: str):
     if session is None:
         session = aiohttp.ClientSession()
     url = f"https://abcdxyz310107.x10.mx/apifl.php?username={username}"
-    async with session.get(url, timeout=30) as response:
+    async with session.get(url, timeout=50) as response:
         response.raise_for_status()
         return await response.json()
 
@@ -103,16 +103,20 @@ async def auto_buff_job(context):
     # Tạo task riêng để delay mà không block JobQueue
     asyncio.create_task(run_auto_buff(username, chat_id, context))
 
-# ================= /autobuff =================
+# ================= /autobuff (Admin) CẢI TIẾN =================
 async def autobuff(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+
     if not is_admin(user_id):
         await update.message.reply_text("❌ Chỉ admin mới dùng được lệnh này.")
         return
+
     if len(context.args) < 2:
         await update.message.reply_text("❌ Dùng: /autobuff <username> <giây>")
         return
+
     username = context.args[0]
+
     try:
         interval = int(context.args[1])
         if interval < 60:
@@ -121,37 +125,55 @@ async def autobuff(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await update.message.reply_text("❌ Thời gian phải là số giây.")
         return
+
     if user_id in AUTO_JOBS:
         await update.message.reply_text("⚠️ Bạn đã bật auto buff rồi. Dùng /stopbuff trước.")
         return
+
+    # JobQueue tạo task riêng để delay API, không block
+    async def auto_buff_task(context_inner):
+        chat_id = update.effective_chat.id
+        asyncio.create_task(run_auto_buff(username, chat_id, context_inner))
+
     job = context.job_queue.run_repeating(
-        auto_buff_job,
+        auto_buff_task,
         interval=interval,
         first=0,
         data={"username": username, "chat_id": update.effective_chat.id},
         name=str(user_id)
     )
+
     AUTO_JOBS[user_id] = job
     await update.message.reply_text(f"✅ Bật auto buff @{username} mỗi {interval} giây.")
 
-# ================= /autobuffme =================
+# ================= /autobuffme (User) CẢI TIẾN =================
 async def autobuffme(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     username = update.effective_user.username
+
     if not username:
         await update.message.reply_text("❌ Bạn chưa đặt username Telegram.")
         return
-    interval = 900  # 15 phút
+
     if user_id in AUTO_JOBS:
         await update.message.reply_text("⚠️ Bạn đã bật auto buff rồi. Dùng /stopbuff trước.")
         return
+
+    interval = 900  # 15 phút
+
+    # JobQueue chỉ tạo task riêng, không block
+    async def auto_buff_task(context_inner):
+        chat_id = update.effective_chat.id
+        asyncio.create_task(run_auto_buff(username, chat_id, context_inner))
+
     job = context.job_queue.run_repeating(
-        auto_buff_job,
+        auto_buff_task,
         interval=interval,
         first=0,
         data={"username": username, "chat_id": update.effective_chat.id},
         name=str(user_id)
     )
+
     AUTO_JOBS[user_id] = job
     await update.message.reply_text(f"✅ Bật auto buff @{username} mỗi 15 phút.")
 
