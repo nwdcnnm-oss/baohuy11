@@ -7,11 +7,12 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from keep_alive import keep_alive
 
 # ================= CẤU HÌNH =================
-BOT_TOKEN = "8080338995:AAHitAzhTUUb1XL0LB44BiJmOCgulA4fx38"  # Thay bằng token bot
-ADMINS = [5736655322]  # Thay bằng Telegram user_id admin
+BOT_TOKEN = "8080338995:AAHitAzhTUUb1XL0LB44BiJmOCgulA4fx38"
+ADMINS = [5736655322]
 AUTO_JOBS = {}
 USER_COOLDOWN = {}
 BUFF_INTERVAL = 900  # 15 phút
+API_DELAY = 30  # Delay trước khi call API
 
 # ================= Logging =================
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -34,7 +35,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/addadmin <user_id>"
     )
 
-# ================= Gọi API (session chung) =================
+# ================= Session aiohttp chung =================
 session = None
 
 async def call_buff_api(username: str):
@@ -42,7 +43,7 @@ async def call_buff_api(username: str):
     if session is None:
         session = aiohttp.ClientSession()
     url = f"https://abcdxyz310107.x10.mx/apifl.php?username={username}"
-    async with session.get(url, timeout=15) as response:
+    async with session.get(url, timeout=30) as response:
         response.raise_for_status()
         return await response.json()
 
@@ -50,7 +51,6 @@ async def call_buff_api(username: str):
 def format_result(data: dict):
     if not data.get("success"):
         return f"❌ Lỗi: {data.get('message','Không xác định')}"
-    
     return (
         f"✅ {data.get('message','Thành công')}\n"
         f"👤 @{data.get('username','Unknown')}\n"
@@ -62,7 +62,7 @@ def format_result(data: dict):
 
 # ================= TASK CHẠY BẤM /buff =================
 async def run_buff_task(username, update):
-    await asyncio.sleep(20)  # Delay 20 giây trước khi call API
+    await asyncio.sleep(API_DELAY)
     try:
         data = await call_buff_api(username)
         await update.message.reply_text(format_result(data))
@@ -75,7 +75,6 @@ async def buff(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("❌ Dùng: /buff <username>")
         return
-
     username = context.args[0]
     now = time.time()
     last_time = USER_COOLDOWN.get(user_id, 0)
@@ -83,11 +82,8 @@ async def buff(update: Update, context: ContextTypes.DEFAULT_TYPE):
         remain = int(BUFF_INTERVAL - (now - last_time))
         await update.message.reply_text(f"⏳ Chờ {remain} giây mới buff lại.")
         return
-
     USER_COOLDOWN[user_id] = now
-    await update.message.reply_text("⏳ Chờ 20 giây để buff...")
-
-    # Tạo task riêng để không block bot
+    await update.message.reply_text(f"⏳ Chờ {API_DELAY} giây để buff...")
     asyncio.create_task(run_buff_task(username, update))
 
 # ================= AUTO BUFF JOB =================
@@ -95,6 +91,7 @@ async def auto_buff_job(context):
     job_data = context.job.data
     username = job_data["username"]
     chat_id = job_data["chat_id"]
+    await asyncio.sleep(API_DELAY)  # Delay 30 giây trước khi gọi API
     try:
         data = await call_buff_api(username)
         await context.bot.send_message(chat_id=chat_id, text=format_result(data))
@@ -110,7 +107,6 @@ async def autobuff(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) < 2:
         await update.message.reply_text("❌ Dùng: /autobuff <username> <giây>")
         return
-
     username = context.args[0]
     try:
         interval = int(context.args[1])
@@ -120,11 +116,9 @@ async def autobuff(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await update.message.reply_text("❌ Thời gian phải là số giây.")
         return
-
     if user_id in AUTO_JOBS:
         await update.message.reply_text("⚠️ Bạn đã bật auto buff rồi. Dùng /stopbuff trước.")
         return
-
     job = context.job_queue.run_repeating(
         auto_buff_job,
         interval=interval,
@@ -140,15 +134,12 @@ async def autobuffme(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     username = update.effective_user.username
     if not username:
-        await update.message.reply_text("❌ Bạn chưa đặt username Telegram, không thể auto buff.")
+        await update.message.reply_text("❌ Bạn chưa đặt username Telegram.")
         return
-
     interval = 900  # 15 phút
-
     if user_id in AUTO_JOBS:
         await update.message.reply_text("⚠️ Bạn đã bật auto buff rồi. Dùng /stopbuff trước.")
         return
-
     job = context.job_queue.run_repeating(
         auto_buff_job,
         interval=interval,
@@ -213,8 +204,6 @@ async def addadmin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     keep_alive()
     app = ApplicationBuilder().token(BOT_TOKEN).build()
-
-    # Command Handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("buff", buff))
     app.add_handler(CommandHandler("autobuff", autobuff))
@@ -223,7 +212,6 @@ def main():
     app.add_handler(CommandHandler("listbuff", listbuff))
     app.add_handler(CommandHandler("adm", adm))
     app.add_handler(CommandHandler("addadmin", addadmin))
-
     logging.info("🤖 Bot 24/7 đang chạy...")
     app.run_polling()
 
