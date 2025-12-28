@@ -12,7 +12,7 @@ ADMINS = [5736655322]
 AUTO_JOBS = {}
 USER_COOLDOWN = {}
 USER_LAST_FOLLOWERS = {}  # Lưu followers cuối cùng
-API_DELAY = 40  # Delay trước khi call API
+API_DELAY = 36  # Delay trước khi call API
 
 # ================= Logging =================
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -27,7 +27,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🤖 Bot Buff Telegram 24/7\n"
         "Lệnh:\n"
         "/buff <username>\n"
-        "/autobuff <username> <giây>\n"
+        "/autobuff <username> [giây]\n"
         "/autobuffme <giây>\n"
         "/stopbuff\n"
         "/listbuff\n"
@@ -110,19 +110,24 @@ async def autobuff(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(user_id):
         await update.message.reply_text("❌ Chỉ admin mới dùng được lệnh này.")
         return
-    if len(context.args) < 2:
-        await update.message.reply_text("❌ Dùng: /autobuff <username> <giây>")
+    if len(context.args) == 0:
+        await update.message.reply_text("❌ Dùng: /autobuff <username> [giây]")
         return
 
     username = context.args[0]
-    try:
-        interval = int(context.args[1])
-        if interval < 60:
-            await update.message.reply_text("⚠️ Interval tối thiểu 60 giây.")
+
+    # Mặc định 15 phút nếu không nhập giây
+    if len(context.args) >= 2:
+        try:
+            interval = int(context.args[1])
+            if interval < 60:
+                await update.message.reply_text("⚠️ Interval tối thiểu 60 giây.")
+                return
+        except ValueError:
+            await update.message.reply_text("❌ Thời gian phải là số giây.")
             return
-    except ValueError:
-        await update.message.reply_text("❌ Thời gian phải là số giây.")
-        return
+    else:
+        interval = 900  # 15 phút mặc định
 
     if user_id in AUTO_JOBS:
         await update.message.reply_text("⚠️ Bạn đã bật auto buff rồi. Dùng /stopbuff trước.")
