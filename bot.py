@@ -167,7 +167,7 @@ def format_message(username, data):
         f"📊 <b>Tổng:</b> <code>{total:,}</code>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"🕒 <b>Cập nhật:</b> <code>{time_now}</code>\n"
-        f"✅ <b>Trạng thái:</b> Đang chạy..."
+        f"✅ <b>Trạng thái:</b> bú lồn r..."
     )
 
 # ================== AUTO BUFF JOB ==================
