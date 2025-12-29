@@ -5,20 +5,27 @@ import aiohttp
 import logging
 from datetime import datetime
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    ContextTypes,
+)
 from keep_alive import keep_alive
 
 # ================= CONFIG =================
 BOT_TOKEN = "8080338995:AAHitAzhTUUb1XL0LB44BiJmOCgulA4fx38"
 ADMINS = [5736655322]
 
-API_DELAY = 36
-MIN_INTERVAL = 60
+API_DELAY = 36           # delay trước mỗi lần gọi API
+MIN_INTERVAL = 60        # auto buff tối thiểu (giây)
 
-AUTO_JOBS = {}
-AUTO_LAST_FOLLOWERS = {}
-AUTO_STATS = {}          # {uid: {date, count}}
-USER_COOLDOWN = {}
+# ================= GLOBAL =================
+AUTO_JOBS = {}               # {uid: job}
+AUTO_LAST_FOLLOWERS = {}     # {uid: followers}
+AUTO_STATS = {}              # {uid: {date, count}}
+USER_COOLDOWN = {}           # {uid: timestamp}
+
+session: aiohttp.ClientSession | None = None
 
 # ================= LOG =================
 logging.basicConfig(
@@ -27,12 +34,13 @@ logging.basicConfig(
 )
 
 # ================= UTILS =================
-def is_admin(uid):
+def is_admin(uid: int) -> bool:
     return uid in ADMINS
 
 
-def increase_auto_count(uid):
+def increase_auto_count(uid: int) -> int:
     today = datetime.now().strftime("%Y-%m-%d")
+
     if uid not in AUTO_STATS:
         AUTO_STATS[uid] = {"date": today, "count": 0}
 
@@ -44,29 +52,56 @@ def increase_auto_count(uid):
     return AUTO_STATS[uid]["count"]
 
 
-# ================= API =================
-session = None
-
-async def call_buff_api_check(username):
+# ================= SESSION =================
+async def get_session() -> aiohttp.ClientSession:
     global session
-    if session is None:
-        session = aiohttp.ClientSession()
+    if session is None or session.closed:
+        timeout = aiohttp.ClientTimeout(total=40)
+        session = aiohttp.ClientSession(timeout=timeout)
+    return session
 
-    url = f"https://abcdxyz310107.x10.mx/apifl.php?username={username}"
+
+# ================= API =================
+async def call_buff_api_check(username: str) -> dict:
+    """
+    Tự động gọi API:
+    - thử fl1
+    - lỗi thì fallback fl2
+    """
+    urls = [
+        f"https://abcdxyz310107.x10.mx/apifl.php?fl1={username}",
+        f"https://abcdxyz310107.x10.mx/apifl.php?fl2={username}",
+    ]
+
     try:
-        async with session.get(url, timeout=36) as res:
-            data = await res.json()
-            if data.get("success"):
-                return data
-            return {"success": False, "message": "API lỗi"}
-    except Exception as e:
-        return {"success": False, "message": str(e)}
+        s = await get_session()
+
+        for url in urls:
+            try:
+                async with s.get(url) as res:
+                    if res.status != 200:
+                        continue
+
+                    data = await res.json(content_type=None)
+                    if data.get("success"):
+                        return data
+
+            except asyncio.TimeoutError:
+                continue
+            except Exception:
+                continue
+
+        return {"success": False, "message": "API fl1 & fl2 đều lỗi"}
+
+    except Exception:
+        logging.exception("API ERROR")
+        return {"success": False, "message": "Lỗi hệ thống"}
 
 
-def format_result(data):
+def format_result(data: dict) -> str:
     return (
         "✅ BUFF THÀNH CÔNG\n\n"
-        f"👤 @{data.get('username')}\n"
+        f"👤 @{data.get('username','?')}\n"
         f"Nickname: {data.get('nickname','.')}\n"
         f"Follow trước: {data.get('followers_before')}\n"
         f"Follow tăng: +{data.get('followers_increased')}\n"
@@ -74,81 +109,115 @@ def format_result(data):
     )
 
 
-# ================= /start =================
+# ================= COMMANDS =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🤖 BOT BUFF TELEGRAM 24/7\n\n"
         "/buff <username>\n"
-        "/autobuff <username> [giây]\n"
         "/autobuffme [giây]\n"
         "/stopbuff\n"
-        "/listbuff\n"
-        "/stat"
+        "/stat\n"
+        "/help"
+    )
+
+
+async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "📌 HƯỚNG DẪN SỬ DỤNG\n\n"
+        "• /buff <username>\n"
+        "• /autobuffme [giây]\n"
+        "• /stopbuff\n"
+        "• /stat\n\n"
+        "⛔ /autobuff chỉ dành cho admin\n"
+        "📩 Vui lòng ib admin để được dùng"
     )
 
 
 # ================= /buff =================
-async def run_buff(username, update, uid):
-    await asyncio.sleep(API_DELAY)
-    data = await call_buff_api_check(username)
-    if data.get("success"):
-        await update.message.reply_text(format_result(data))
-    else:
-        await update.message.reply_text(f"❌ {data.get('message')}")
+async def run_buff(username: str, update: Update):
+    try:
+        await asyncio.sleep(API_DELAY)
+        data = await call_buff_api_check(username)
+
+        if data.get("success"):
+            await update.message.reply_text(format_result(data))
+        else:
+            await update.message.reply_text(f"❌ {data.get('message')}")
+
+    except Exception:
+        logging.exception("BUFF ERROR")
+        await update.message.reply_text("❌ Lỗi hệ thống")
 
 
 async def buff(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
+
     if not context.args:
         await update.message.reply_text("❌ /buff <username>")
         return
 
     now = time.time()
     if now - USER_COOLDOWN.get(uid, 0) < 30:
-        await update.message.reply_text("⏳ Chờ 30s để buff lại.")
+        await update.message.reply_text("⏳ Vui lòng chờ 30 giây.")
         return
 
     USER_COOLDOWN[uid] = now
     username = context.args[0]
 
     await update.message.reply_text(f"⏳ Đang buff @{username}...")
-    asyncio.create_task(run_buff(username, update, uid))
+    asyncio.create_task(run_buff(username, update))
 
 
-# ================= AUTO TASK =================
-async def run_auto_buff(username, chat_id, context, uid):
-    await asyncio.sleep(API_DELAY)
-    data = await call_buff_api_check(username)
+# ================= AUTO BUFF CORE =================
+async def run_auto_buff(username: str, chat_id: int, context, uid: int):
+    try:
+        await asyncio.sleep(API_DELAY)
+        data = await call_buff_api_check(username)
 
-    if not data.get("success"):
-        return
+        if not data.get("success"):
+            return
 
-    followers_now = int(data.get("followers_now", 0))
-    last = AUTO_LAST_FOLLOWERS.get(uid, 0)
+        followers_now = int(data.get("followers_now", 0))
+        last = AUTO_LAST_FOLLOWERS.get(uid)
 
-    if followers_now == last:
-        return
+        if last is not None and followers_now <= last:
+            return
 
-    AUTO_LAST_FOLLOWERS[uid] = followers_now
-    count_today = increase_auto_count(uid)
+        AUTO_LAST_FOLLOWERS[uid] = followers_now
+        count_today = increase_auto_count(uid)
 
-    msg = (
-        "🤖 AUTO BUFF\n\n"
-        f"👤 @{username}\n"
-        f"Follow trước: {data.get('followers_before')}\n"
-        f"Follow tăng: +{data.get('followers_increased')}\n"
-        f"Follow hiện tại: {followers_now}\n\n"
-        f"🔁 Lần auto buff hôm nay: {count_today}"
+        msg = (
+            "🤖 AUTO BUFF\n\n"
+            f"👤 @{username}\n"
+            f"Follow trước: {data.get('followers_before')}\n"
+            f"Follow tăng: +{data.get('followers_increased')}\n"
+            f"Follow hiện tại: {followers_now}\n\n"
+            f"🔁 Lần auto buff hôm nay: {count_today}"
+        )
+
+        await context.bot.send_message(chat_id=chat_id, text=msg)
+
+    except Exception:
+        logging.exception("AUTO BUFF ERROR")
+
+
+def start_auto_job(context, username, chat_id, uid, interval):
+    async def job_callback(c):
+        await run_auto_buff(username, chat_id, c, uid)
+
+    return context.job_queue.run_repeating(
+        job_callback,
+        interval=interval,
+        first=0
     )
-
-    await context.bot.send_message(chat_id=chat_id, text=msg)
 
 
 # ================= /autobuff (ADMIN) =================
 async def autobuff(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
+
     if not is_admin(uid):
-        await update.message.reply_text("❌ Chỉ admin.")
+        await update.message.reply_text("❌ Chỉ admin được dùng.")
         return
 
     if not context.args:
@@ -173,19 +242,19 @@ async def autobuff(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Auto buff đang chạy.")
         return
 
-    job = context.job_queue.run_repeating(
-        lambda c: asyncio.create_task(
-            run_auto_buff(username, update.effective_chat.id, c, uid)
-        ),
-        interval=interval,
-        first=0
+    job = start_auto_job(
+        context,
+        username,
+        update.effective_chat.id,
+        uid,
+        interval
     )
 
     AUTO_JOBS[uid] = job
-    AUTO_LAST_FOLLOWERS[uid] = 0
+    AUTO_LAST_FOLLOWERS[uid] = None
 
     await update.message.reply_text(
-        f"✅ Auto buff @{username}\n⏱ {interval//60} phút"
+        f"✅ Auto buff @{username}\n⏱ {interval // 60} phút"
     )
 
 
@@ -195,7 +264,7 @@ async def autobuffme(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = update.effective_user.username
 
     if not username:
-        await update.message.reply_text("❌ Chưa có username.")
+        await update.message.reply_text("❌ Bạn chưa có username.")
         return
 
     interval = 900
@@ -214,19 +283,19 @@ async def autobuffme(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Auto buff đang chạy.")
         return
 
-    job = context.job_queue.run_repeating(
-        lambda c: asyncio.create_task(
-            run_auto_buff(username, update.effective_chat.id, c, uid)
-        ),
-        interval=interval,
-        first=0
+    job = start_auto_job(
+        context,
+        username,
+        update.effective_chat.id,
+        uid,
+        interval
     )
 
     AUTO_JOBS[uid] = job
-    AUTO_LAST_FOLLOWERS[uid] = 0
+    AUTO_LAST_FOLLOWERS[uid] = None
 
     await update.message.reply_text(
-        f"✅ Auto buff @{username}\n⏱ {interval//60} phút"
+        f"✅ Auto buff @{username}\n⏱ {interval // 60} phút"
     )
 
 
@@ -242,26 +311,13 @@ async def stopbuff(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Chưa bật auto buff.")
 
 
-# ================= /listbuff =================
-async def listbuff(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not AUTO_JOBS:
-        await update.message.reply_text("⚠️ Không có auto buff.")
-        return
-
-    msg = "📋 AUTO BUFF:\n"
-    for uid, job in AUTO_JOBS.items():
-        msg += f"• User {uid}\n"
-
-    await update.message.reply_text(msg)
-
-
 # ================= /stat =================
 async def stat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     today = datetime.now().strftime("%Y-%m-%d")
 
     if uid not in AUTO_STATS or AUTO_STATS[uid]["date"] != today:
-        await update.message.reply_text("📊 Hôm nay bạn chưa auto buff lần nào.")
+        await update.message.reply_text("📊 Hôm nay chưa auto buff.")
         return
 
     count = AUTO_STATS[uid]["count"]
@@ -274,14 +330,15 @@ async def stat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ================= MAIN =================
 def main():
     keep_alive()
+
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("buff", buff))
     app.add_handler(CommandHandler("autobuff", autobuff))
     app.add_handler(CommandHandler("autobuffme", autobuffme))
     app.add_handler(CommandHandler("stopbuff", stopbuff))
-    app.add_handler(CommandHandler("listbuff", listbuff))
     app.add_handler(CommandHandler("stat", stat))
 
     logging.info("🤖 BOT ĐANG CHẠY...")
@@ -290,4 +347,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
