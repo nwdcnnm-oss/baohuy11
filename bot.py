@@ -1,21 +1,3 @@
-Code của bạn có ý tưởng tốt nhưng gặp phải một số vấn đề kỹ thuật thường gặp khi chạy bot Telegram (ví dụ: lỗi khi nội dung tin nhắn không thay đổi, thiếu User-Agent khi gọi API, hoặc xử lý lỗi mạng).
-
-Dưới đây là phiên bản đã tối ưu hóa và sửa lỗi.
-
-Các thay đổi quan trọng:
-Chống lỗi MessageNotModified: Khi autobuff chạy, nếu số lượng follow không thay đổi so với lần trước, Telegram sẽ trả về lỗi và làm crash job. Tôi đã thêm try-except để bỏ qua lỗi này.
-Thêm User-Agent: Các hosting miễn phí (như x10.mx) thường chặn các request từ python mặc định. Tôi đã thêm giả lập trình duyệt để gọi API mượt hơn.
-Bảo mật: Tôi đã thay BOT_TOKEN bằng placeholder. Bạn hãy dán lại token của mình vào.
-Xử lý lỗi: Thêm log lỗi để bạn dễ debug nếu API chết.
-Code hoàn chỉnh:
-code
-Python
-
-download
-
-content_copy
-
-expand_less
 import aiohttp
 import asyncio
 import re
