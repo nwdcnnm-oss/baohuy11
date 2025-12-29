@@ -1,146 +1,81 @@
 #!/usr/bin/env python3
-import time
-import asyncio
-import aiohttp
-import logging
+import time, asyncio, aiohttp, logging
 from datetime import datetime
 from telegram import Update
 from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    ContextTypes,
-    MessageHandler,
-    filters,
+    ApplicationBuilder, CommandHandler,
+    ContextTypes, MessageHandler, filters
 )
 from keep_alive import keep_alive
 
 # ================= CONFIG =================
 BOT_TOKEN = "8080338995:AAHitAzhTUUb1XL0LB44BiJmOCgulA4fx38"
 ADMINS = [5736655322]
+ALLOWED_GROUP_ID = -1002666964512
 
-ALLOWED_GROUP_ID = -1002666964512  # 🔒 NHÓM DUY NHẤT
 API_DELAY = 36
 AUTO_INTERVAL = 900  # 15 phút
+BUFF_COOLDOWN = 30   # /buff public
 
-# ================= GLOBAL =================
-AUTO_JOBS = {}
-AUTO_LAST_FOLLOWERS = {}
-AUTO_STATS = {}
-USER_COOLDOWN = {}
+# ================= DATA =================
+AUTO_JOBS = {}          # {uid: {username: job}}
+AUTO_LAST = {}          # {(uid, username): last_follow}
+AUTO_STATS = {}         # {(uid, username): {date, count}}
+USER_COOLDOWN = {}      # {uid: last_time}
 session = None
 
 # ================= LOG =================
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s"
-)
+logging.basicConfig(level=logging.INFO)
 
 # ================= UTILS =================
-def is_admin(uid: int) -> bool:
+def is_admin(uid): 
     return uid in ADMINS
 
-
-def allow_group_only(update: Update) -> bool:
-    chat = update.effective_chat
-    return chat and chat.id == ALLOWED_GROUP_ID
-
-
-def increase_auto_count(uid: int) -> int:
-    today = datetime.now().strftime("%Y-%m-%d")
-    if uid not in AUTO_STATS:
-        AUTO_STATS[uid] = {"date": today, "count": 0}
-    if AUTO_STATS[uid]["date"] != today:
-        AUTO_STATS[uid]["date"] = today
-        AUTO_STATS[uid]["count"] = 0
-    AUTO_STATS[uid]["count"] += 1
-    return AUTO_STATS[uid]["count"]
-
+def allow_group(update): 
+    return update.effective_chat.id == ALLOWED_GROUP_ID
 
 # ================= SESSION =================
 async def get_session():
     global session
-    if session is None or session.closed:
-        session = aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=40)
-        )
+    if not session or session.closed:
+        session = aiohttp.ClientSession()
     return session
 
-
 # ================= API =================
-async def call_buff_api_check(username: str) -> dict:
+async def call_api(username):
     urls = [
         f"https://abcdxyz310107.x10.mx/apifl.php?fl1={username}",
         f"https://abcdxyz310107.x10.mx/apifl.php?fl2={username}",
     ]
-    try:
-        s = await get_session()
-        for url in urls:
-            try:
-                async with s.get(url) as res:
-                    if res.status != 200:
-                        continue
-                    data = await res.json(content_type=None)
-                    if data.get("success"):
-                        return data
-            except Exception:
-                continue
-        return {"success": False, "message": "API lỗi"}
-    except Exception:
-        logging.exception("API ERROR")
-        return {"success": False, "message": "Lỗi hệ thống"}
+    s = await get_session()
+    for url in urls:
+        try:
+            async with s.get(url, timeout=40) as r:
+                data = await r.json(content_type=None)
+                if data.get("success"):
+                    return data
+        except:
+            pass
+    return {"success": False, "message": "API lỗi"}
 
-
-def format_result(data: dict) -> str:
+def format_result(d):
     return (
         "✅ BUFF THÀNH CÔNG\n\n"
-        f"👤 @{data.get('username','?')}\n"
-        f"Nickname: {data.get('nickname','.')}\n"
-        f"Follow trước: {data.get('followers_before')}\n"
-        f"Follow tăng: +{data.get('followers_increased')}\n"
-        f"Follow hiện tại: {data.get('followers_now')}"
+        f"👤 @{d.get('username')}\n"
+        f"Follow trước: {d.get('followers_before')}\n"
+        f"Follow tăng: +{d.get('followers_increased')}\n"
+        f"Follow hiện tại: {d.get('followers_now')}"
     )
 
-
-# ================= AUTO LEAVE GROUP =================
-async def guard_and_leave(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ================= GUARD =================
+async def guard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
-    if not chat:
-        return
-
-    # Nếu là group/supergroup và KHÔNG phải nhóm cho phép → leave ngay
     if chat.type in ("group", "supergroup") and chat.id != ALLOWED_GROUP_ID:
-        try:
-            await context.bot.leave_chat(chat.id)
-            logging.info(f"🚪 Left unauthorized group: {chat.id}")
-        except Exception:
-            pass
+        await context.bot.leave_chat(chat.id)
 
-
-# ================= COMMANDS =================
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not allow_group_only(update):
-        return
-    await update.message.reply_text(
-        "🤖 BOT BUFF TELEGRAM 24/7\n\n"
-        "/buff <username>\n"
-        "/autobuff <username>\n"
-        "/stopbuff\n"
-        "/stat"
-    )
-
-
-# ================= /buff =================
-async def run_buff(username, update):
-    await asyncio.sleep(API_DELAY)
-    data = await call_buff_api_check(username)
-    if data.get("success"):
-        await update.message.reply_text(format_result(data))
-    else:
-        await update.message.reply_text(f"❌ {data.get('message')}")
-
-
+# ================= /buff (PUBLIC) =================
 async def buff(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not allow_group_only(update):
+    if not allow_group(update):
         return
 
     uid = update.effective_user.id
@@ -149,139 +84,139 @@ async def buff(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     now = time.time()
-    if now - USER_COOLDOWN.get(uid, 0) < 30:
-        await update.message.reply_text("⏳ Chờ 30s.")
+    if now - USER_COOLDOWN.get(uid, 0) < BUFF_COOLDOWN:
+        await update.message.reply_text(
+            f"⏳ Chờ {BUFF_COOLDOWN}s để buff lại."
+        )
         return
 
     USER_COOLDOWN[uid] = now
-    username = context.args[0]
-    await update.message.reply_text(f"⏳ Đang buff @{username}...")
-    asyncio.create_task(run_buff(username, update))
+    username = context.args[0].lstrip("@")
 
+    await update.message.reply_text(f"⏳ Đang buff @{username}...")
+    await asyncio.sleep(API_DELAY)
+
+    data = await call_api(username)
+    if data.get("success"):
+        await update.message.reply_text(format_result(data))
+    else:
+        await update.message.reply_text("❌ Buff thất bại")
 
 # ================= AUTO CORE =================
-async def run_auto_buff(username, chat_id, context, uid):
-    try:
-        await asyncio.sleep(API_DELAY)
-        data = await call_buff_api_check(username)
-        if not data.get("success"):
-            return
+async def auto_task(username, chat_id, context, uid):
+    await asyncio.sleep(API_DELAY)
+    data = await call_api(username)
+    if not data.get("success"):
+        return
 
-        followers_now = int(data.get("followers_now", 0))
-        last = AUTO_LAST_FOLLOWERS.get(uid)
-        if last is not None and followers_now <= last:
-            return
+    key = (uid, username)
+    now = int(data.get("followers_now", 0))
+    last = AUTO_LAST.get(key)
 
-        AUTO_LAST_FOLLOWERS[uid] = followers_now
-        count_today = increase_auto_count(uid)
+    if last and now <= last:
+        return
 
-        msg = (
-            "🤖 AUTO BUFF\n\n"
-            f"👤 @{username}\n"
-            f"Follow trước: {data.get('followers_before')}\n"
-            f"Follow tăng: +{data.get('followers_increased')}\n"
-            f"Follow hiện tại: {followers_now}\n\n"
-            f"🔁 Lần auto hôm nay: {count_today}"
-        )
-        await context.bot.send_message(chat_id=chat_id, text=msg)
-    except Exception:
-        logging.exception("AUTO ERROR")
+    AUTO_LAST[key] = now
+    today = datetime.now().strftime("%Y-%m-%d")
+    AUTO_STATS.setdefault(key, {"date": today, "count": 0})
+    if AUTO_STATS[key]["date"] != today:
+        AUTO_STATS[key] = {"date": today, "count": 0}
+    AUTO_STATS[key]["count"] += 1
 
+    await context.bot.send_message(chat_id, format_result(data))
 
-def start_auto_job(context, username, chat_id, uid):
-    async def job_callback(c):
-        await run_auto_buff(username, chat_id, c, uid)
-
-    return context.job_queue.run_repeating(
-        job_callback,
-        interval=AUTO_INTERVAL,
-        first=0
-    )
-
-
-# ================= /autobuff =================
+# ================= /autobuff (ADMIN) =================
 async def autobuff(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not allow_group_only(update):
+    if not allow_group(update):
         return
 
     uid = update.effective_user.id
     if not is_admin(uid):
-        await update.message.reply_text("❌ Chỉ admin được dùng.")
+        await update.message.reply_text("❌ Chỉ admin")
         return
 
     if not context.args:
         await update.message.reply_text("❌ /autobuff <username>")
         return
 
-    if uid in AUTO_JOBS:
-        await update.message.reply_text("⚠️ Auto buff đang chạy.")
+    username = context.args[0].lstrip("@")
+    AUTO_JOBS.setdefault(uid, {})
+
+    if username in AUTO_JOBS[uid]:
+        await update.message.reply_text("⚠️ User đang treo")
         return
 
-    username = context.args[0]
-    job = start_auto_job(
-        context,
-        username,
-        update.effective_chat.id,
-        uid
+    job = context.job_queue.run_repeating(
+        lambda c: asyncio.create_task(
+            auto_task(username, update.effective_chat.id, c, uid)
+        ),
+        interval=AUTO_INTERVAL,
+        first=0
     )
 
-    AUTO_JOBS[uid] = job
-    AUTO_LAST_FOLLOWERS[uid] = None
-
+    AUTO_JOBS[uid][username] = job
     await update.message.reply_text(
-        f"✅ Auto buff @{username}\n"
-        f"⏱ Chu kỳ: 900 giây (15 phút)\n"
-        f"♾️ Trạng thái: TREO VĨNH VIỄN"
+        f"✅ Treo auto @{username}\n⏱ 900 giây"
     )
-
 
 # ================= /stopbuff =================
 async def stopbuff(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not allow_group_only(update):
+    if not allow_group(update):
         return
 
     uid = update.effective_user.id
-    job = AUTO_JOBS.pop(uid, None)
+    if uid not in AUTO_JOBS:
+        await update.message.reply_text("⚠️ Không có auto")
+        return
+
+    if not context.args:
+        await update.message.reply_text("❌ /stopbuff <username|all>")
+        return
+
+    if context.args[0] == "all":
+        for job in AUTO_JOBS[uid].values():
+            job.schedule_removal()
+        AUTO_JOBS[uid].clear()
+        await update.message.reply_text("🛑 Dừng toàn bộ auto")
+        return
+
+    username = context.args[0].lstrip("@")
+    job = AUTO_JOBS[uid].pop(username, None)
     if job:
         job.schedule_removal()
-        await update.message.reply_text("🛑 Đã dừng auto buff.")
+        await update.message.reply_text(f"🛑 Đã dừng @{username}")
     else:
-        await update.message.reply_text("⚠️ Chưa bật auto buff.")
+        await update.message.reply_text("⚠️ Không tìm thấy user")
 
-
-# ================= /stat =================
-async def stat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not allow_group_only(update):
+# ================= /listbuff =================
+async def listbuff(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not allow_group(update):
         return
 
     uid = update.effective_user.id
-    today = datetime.now().strftime("%Y-%m-%d")
-    if uid not in AUTO_STATS or AUTO_STATS[uid]["date"] != today:
-        await update.message.reply_text("📊 Hôm nay chưa auto.")
+    users = AUTO_JOBS.get(uid, {})
+    if not users:
+        await update.message.reply_text("📭 Không có auto")
         return
-    await update.message.reply_text(
-        f"📊 HÔM NAY AUTO: {AUTO_STATS[uid]['count']} lần"
-    )
 
+    msg = "📋 AUTO ĐANG TREO:\n"
+    for u in users:
+        msg += f"• @{u}\n"
+    await update.message.reply_text(msg)
 
 # ================= MAIN =================
 def main():
     keep_alive()
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # 🔒 GUARD: tự động rời nhóm khác
-    app.add_handler(MessageHandler(filters.ALL, guard_and_leave), group=0)
-
-    # Commands (chỉ chạy trong nhóm cho phép)
-    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.ALL, guard), group=0)
     app.add_handler(CommandHandler("buff", buff))
     app.add_handler(CommandHandler("autobuff", autobuff))
     app.add_handler(CommandHandler("stopbuff", stopbuff))
-    app.add_handler(CommandHandler("stat", stat))
+    app.add_handler(CommandHandler("listbuff", listbuff))
 
-    logging.info("🤖 BOT ĐANG CHẠY (GROUP-LOCKED)...")
+    logging.info("🤖 BOT CHẠY - PUBLIC BUFF + ADMIN AUTO")
     app.run_polling(close_loop=False)
-
 
 if __name__ == "__main__":
     main()
