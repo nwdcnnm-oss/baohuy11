@@ -29,7 +29,7 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Accept": "application/json, text/javascript, */*; q=0.01"
 }
-TIMEOUT = aiohttp.ClientTimeout(total=20) # 20s timeout
+TIMEOUT = aiohttp.ClientTimeout(total=36) # 20s timeout
 VN_TZ = pytz.timezone('Asia/Ho_Chi_Minh')
 
 # Logging
