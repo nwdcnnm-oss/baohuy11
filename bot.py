@@ -9,7 +9,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from keep_alive import keep_alive
 
 # ================== CẤU HÌNH ==================
-BOT_TOKEN = "8080338995:AAHitAzhTUUb1XL0LB44BiJmOCgulA4fx38"
+BOT_TOKEN = "8080338995:8080338995:AAFXhz1kjZsZlE3KUP_FCTis6bF3j0PIAKU"
 ALLOWED_GROUP_ID = -1002666964512
 ADMINS = [5736655322]
 
