@@ -1,205 +1,112 @@
-import asyncio
 import aiohttp
-import pytz
-import time
-import json
+import asyncio
 import re
 from datetime import datetime
-
+import pytz # Thư viện xử lý múi giờ
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
-
 from keep_alive import keep_alive
 
-# ================= CONFIG =================
-BOT_TOKEN = "8080338995:AAHI8yhEUnJGgqEIDcaJ0eIKBGtuQpzQiX8"
-
+# ================== CẤU HÌNH ==================
+BOT_TOKEN = "8080338995:AAHitAzhTUUb1XL0LB44BiJmOCgulA4fx38"
 ALLOWED_GROUP_ID = -1002666964512
-ADMINS = [5736655322]
 
 API_FL1 = "https://abcdxyz310107.x10.mx/apifl.php?fl1={}"
 API_FL2 = "https://abcdxyz310107.x10.mx/apifl.php?fl2={}"
 
-VIETNAM_TZ = pytz.timezone("Asia/Ho_Chi_Minh")
+WRONG_GROUP_MSG = (
+    "❌ *Xin lỗi, bot này chỉ hoạt động trong nhóm này:*\n"
+    "👉 https://t.me/baohuydevs"
+)
 
-API_TIMEOUT = 36
-API_RETRY = 11
-API_COOLDOWN = 600   # 10 phút
-AUTO_BUFF_DELAY = 60
-# =========================================
+TIMEOUT = aiohttp.ClientTimeout(total=20)
+# =============================================
 
-session_instance = None
-auto_buff_running = False
+# Hàm lấy ngày giờ Việt Nam hiện tại
+def get_vietnam_time():
+    tz = pytz.timezone('Asia/Ho_Chi_Minh')
+    return datetime.now(tz).strftime("%H:%M:%S - %d/%m/%Y")
 
-api_status = {
-    "API_FL1": 0,
-    "API_FL2": 0
-}
-
-# ================= SESSION =================
-async def get_session():
-    global session_instance
-    if session_instance is None or session_instance.closed:
-        session_instance = aiohttp.ClientSession()
-    return session_instance
-
-# ================= UTILS =================
 async def check_group(update: Update):
-    if update.effective_chat.id != ALLOWED_GROUP_ID:
-        await update.message.reply_text(
-            "❌ Xin lỗi, bot này chỉ hoạt động trong nhóm này:\n"
-            "👉 https://t.me/baohuydevs"
-        )
+    chat = update.effective_chat
+    if not chat or chat.id != ALLOWED_GROUP_ID:
+        if update.message:
+            await update.message.reply_text(WRONG_GROUP_MSG, parse_mode="Markdown", disable_web_page_preview=True)
         return False
     return True
 
-def is_admin(uid: int):
-    return uid in ADMINS
+async def call_api(session, url):
+    try:
+        async with session.get(url) as r:
+            if r.status == 200:
+                return (await r.text()).strip()
+    except:
+        pass
+    return ""
 
-def now_vn():
-    return datetime.now(VIETNAM_TZ).strftime("%H:%M:%S")
+def parse_follow_data(text):
+    if not text: return None
+    nickname = re.search(r'nickname[:\s]*([^\n\r]+)', text, re.IGNORECASE)
+    before = re.search(r'follow\s*trước[:\s]*(\d+)', text, re.IGNORECASE)
+    plus = re.search(r'\+(\d+)', text)
+    return {
+        "nickname": nickname.group(1).strip() if nickname else "Không rõ",
+        "before": int(before.group(1)) if before else 0,
+        "plus": int(plus.group(1)) if plus else 0
+    }
 
-# ================= FORMAT =================
-def format_result(username, name, before, added):
-    total = before + added
+def format_success(username, nickname, before, plus):
+    time_str = get_vietnam_time()
     return (
-        "📊 KẾT QUẢ KIỂM TRA\n"
-        "━━━━━━━━━━━━━━━━━━\n"
-        f"👤 User: @{username}\n"
-        f"🏷 Tên: {name}\n"
-        f"📉 Gốc: {before}\n"
-        f"📈 Tăng: +{added}\n"
-        f"📊 Tổng: {total}\n"
-        f"🕒 Lúc: {now_vn()}\n"
-        "━━━━━━━━━━━━━━━━━━"
+        "✅ *BUFF THÀNH CÔNG*\n"
+        "--------------------------\n"
+        f"👤 *Tài khoản:* @{username}\n"
+        f"📛 *Nickname:* {nickname}\n"
+        f"📊 *Trước khi tăng:* {before}\n"
+        f"📈 *Đã tăng thêm:* +{plus}\n"
+        f"✨ *Hiện tại:* {before + plus}\n"
+        "--------------------------\n"
+        f"🕒 *Thời gian:* {time_str}"
     )
 
-# ================= API CORE =================
-def api_available(name: str):
-    return time.time() >= api_status.get(name, 0)
-
-async def call_api_safe(name: str, url: str):
-    if not api_available(name):
-        return None
-
-    session = await get_session()
-
-    for _ in range(API_RETRY + 1):
-        try:
-            async with session.get(url, timeout=API_TIMEOUT) as r:
-                return await r.text()
-        except:
-            pass
-
-    api_status[name] = time.time() + API_COOLDOWN
-    return None
-
-# ================= BUFF CORE =================
-async def do_buff(target_id: str):
-    tasks = []
-
-    if api_available("API_FL1"):
-        tasks.append(call_api_safe("API_FL1", API_FL1.format(target_id)))
-    if api_available("API_FL2"):
-        tasks.append(call_api_safe("API_FL2", API_FL2.format(target_id)))
-
-    if not tasks:
-        return format_result(target_id, target_id, 0, 0)
-
-    results = await asyncio.gather(*tasks)
-    raw = next((r for r in results if r), None)
-
-    username = target_id
-    name = target_id
-    before = 0
-    after = 0
-
-    if raw:
-        try:
-            data = json.loads(raw)
-            username = data.get("username", target_id)
-            name = data.get("name", username)
-            before = int(data.get("before", data.get("old", 0)))
-            after = int(data.get("after", data.get("new", before)))
-        except:
-            nums = list(map(int, re.findall(r"\d+", raw)))
-            if len(nums) >= 2:
-                before, after = nums[0], nums[-1]
-            elif len(nums) == 1:
-                before = after = nums[0]
-
-    added = max(after - before, 0)
-    return format_result(username, name, before, added)
-
-# ================= COMMANDS =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_group(update):
-        return
-    await update.message.reply_text(
-        "🤖 Bot BUFF đang hoạt động\n\n"
-        "📌 /buff <id>\n"
-        "♻️ /autobuff\n"
-        "🛑 /stopbuff"
-    )
+    if not await check_group(update): return
+    await update.message.reply_text("🤖 *Bot Buff Follow*\nSử dụng: `/buff <username>`", parse_mode="Markdown")
 
 async def buff(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_group(update):
-        return
-    if not context.args:
-        await update.message.reply_text("❌ /buff <user_id>")
-        return
-
-    msg = await update.message.reply_text("⏳ Đang xử lý...")
-    await msg.edit_text(await do_buff(context.args[0]))
-
-async def auto_buff_loop(app):
-    global auto_buff_running
-    while auto_buff_running:
-        try:
-            text = await do_buff("auto")
-            await app.bot.send_message(ALLOWED_GROUP_ID, text)
-        except Exception as e:
-            print("AUTO BUFF ERROR:", e)
-        await asyncio.sleep(AUTO_BUFF_DELAY)
-
-async def autobuff(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global auto_buff_running
-    if not await check_group(update):
-        return
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("⛔ Chỉ ADMIN được dùng /autobuff")
-        return
-    if auto_buff_running:
-        await update.message.reply_text("⚠️ AUTO BUFF đang chạy")
+    if not await check_group(update): return
+    if len(context.args) != 1:
+        await update.message.reply_text("❌ `/buff <username>`")
         return
 
-    auto_buff_running = True
-    context.application.create_task(auto_buff_loop(context.application))
-    await update.message.reply_text("✅ Đã BẬT AUTO BUFF")
+    username = context.args[0]
+    wait_msg = await update.message.reply_text("⏳ *Đang xử lý dữ liệu...*", parse_mode="Markdown")
 
-async def stopbuff(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global auto_buff_running
-    if not await check_group(update):
+    async with aiohttp.ClientSession(timeout=TIMEOUT) as session:
+        res1, res2 = await asyncio.gather(
+            call_api(session, API_FL1.format(username)),
+            call_api(session, API_FL2.format(username))
+        )
+
+    d1, d2 = parse_follow_data(res1), parse_follow_data(res2)
+
+    if not d1 and not d2:
+        await wait_msg.edit_text("⚠️ *API không trả dữ liệu!*")
         return
-    if not is_admin(update.effective_user.id):
-        return
 
-    auto_buff_running = False
-    await update.message.reply_text("🛑 Đã TẮT AUTO BUFF")
+    nickname = d1["nickname"] if d1 else d2["nickname"]
+    before = d1["before"] if d1 else d2["before"]
+    plus = (d1["plus"] if d1 else 0) + (d2["plus"] if d2 else 0)
 
-# ================= MAIN =================
+    await wait_msg.edit_text(format_success(username, nickname, before, plus), parse_mode="Markdown")
+
 def main():
-    keep_alive()  # ♻️ treo Render
-
+    keep_alive()
     app = ApplicationBuilder().token(BOT_TOKEN).build()
-
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("buff", buff))
-    app.add_handler(CommandHandler("autobuff", autobuff))
-    app.add_handler(CommandHandler("stopbuff", stopbuff))
-
-    print("🤖 Bot đang chạy (FULL – STABLE)...")
-    app.run_polling(close_loop=False)
+    print(f"🤖 Bot is running... Time: {get_vietnam_time()}")
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
