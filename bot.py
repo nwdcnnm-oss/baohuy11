@@ -37,11 +37,11 @@ API_FL2 = "https://abcdxyz310107.x10.mx/apifl.php?fl2={}"
 
 VIETNAM_TZ = pytz.timezone("Asia/Ho_Chi_Minh")
 
-API_TIMEOUT = 15
-API_RETRY = 2
-API_COOLDOWN = 600  # 10 phút
+API_TIMEOUT = 36
+API_RETRY = 6
+API_COOLDOWN = 300  # 10 phút
 
-AUTO_BUFF_DELAY = 60
+AUTO_BUFF_DELAY = 900
 # =========================================
 
 
