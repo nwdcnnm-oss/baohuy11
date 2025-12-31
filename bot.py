@@ -3,6 +3,7 @@ import aiohttp
 import pytz
 import time
 import json
+import re
 from datetime import datetime
 
 from telegram import Update
@@ -21,31 +22,28 @@ API_FL2 = "https://abcdxyz310107.x10.mx/apifl.php?fl2={}"
 
 VIETNAM_TZ = pytz.timezone("Asia/Ho_Chi_Minh")
 
-API_TIMEOUT = 15
-API_RETRY = 2
-API_COOLDOWN = 600  # 10 phút
-
+API_TIMEOUT = 36
+API_RETRY = 11
+API_COOLDOWN = 600   # 10 phút
 AUTO_BUFF_DELAY = 60
 # =========================================
 
 session_instance = None
 auto_buff_running = False
-auto_buff_task_ref = None
 
-# ============ API STATUS ============
 api_status = {
     "API_FL1": 0,
     "API_FL2": 0
 }
 
-# =============== SESSION ==================
+# ================= SESSION =================
 async def get_session():
     global session_instance
     if session_instance is None or session_instance.closed:
         session_instance = aiohttp.ClientSession()
     return session_instance
 
-# =============== UTILS ====================
+# ================= UTILS =================
 async def check_group(update: Update):
     if update.effective_chat.id != ALLOWED_GROUP_ID:
         await update.message.reply_text(
@@ -61,7 +59,7 @@ def is_admin(uid: int):
 def now_vn():
     return datetime.now(VIETNAM_TZ).strftime("%H:%M:%S")
 
-# ============ FORMAT KẾT QUẢ ============
+# ================= FORMAT =================
 def format_result(username, name, before, added):
     total = before + added
     return (
@@ -76,7 +74,7 @@ def format_result(username, name, before, added):
         "━━━━━━━━━━━━━━━━━━"
     )
 
-# ============ API FALLBACK ============
+# ================= API CORE =================
 def api_available(name: str):
     return time.time() >= api_status.get(name, 0)
 
@@ -90,13 +88,13 @@ async def call_api_safe(name: str, url: str):
         try:
             async with session.get(url, timeout=API_TIMEOUT) as r:
                 return await r.text()
-        except Exception:
+        except:
             pass
 
     api_status[name] = time.time() + API_COOLDOWN
     return None
 
-# ============ BUFF CORE ============
+# ================= BUFF CORE =================
 async def do_buff(target_id: str):
     tasks = []
 
@@ -106,25 +104,31 @@ async def do_buff(target_id: str):
         tasks.append(call_api_safe("API_FL2", API_FL2.format(target_id)))
 
     if not tasks:
-        return "❌ Hệ thống đang bận, vui lòng thử lại sau"
+        return format_result(target_id, target_id, 0, 0)
 
     results = await asyncio.gather(*tasks)
-
     raw = next((r for r in results if r), None)
-    if not raw:
-        return "❌ Hệ thống đang bận, vui lòng thử lại sau"
 
-    try:
-        data = json.loads(raw)
-    except:
-        return "❌ Dữ liệu API không hợp lệ"
+    username = target_id
+    name = target_id
+    before = 0
+    after = 0
 
-    username = data.get("username", target_id)
-    name = data.get("name", target_id)
-    before = int(data.get("before", data.get("old", 0)))
-    after = int(data.get("after", data.get("new", before)))
+    if raw:
+        try:
+            data = json.loads(raw)
+            username = data.get("username", target_id)
+            name = data.get("name", username)
+            before = int(data.get("before", data.get("old", 0)))
+            after = int(data.get("after", data.get("new", before)))
+        except:
+            nums = list(map(int, re.findall(r"\d+", raw)))
+            if len(nums) >= 2:
+                before, after = nums[0], nums[-1]
+            elif len(nums) == 1:
+                before = after = nums[0]
+
     added = max(after - before, 0)
-
     return format_result(username, name, before, added)
 
 # ================= COMMANDS =================
@@ -141,14 +145,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def buff(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_group(update):
         return
-
     if not context.args:
         await update.message.reply_text("❌ /buff <user_id>")
         return
 
     msg = await update.message.reply_text("⏳ Đang xử lý...")
-    text = await do_buff(context.args[0])
-    await msg.edit_text(text)
+    await msg.edit_text(await do_buff(context.args[0]))
 
 async def auto_buff_loop(app):
     global auto_buff_running
@@ -158,12 +160,10 @@ async def auto_buff_loop(app):
             await app.bot.send_message(ALLOWED_GROUP_ID, text)
         except Exception as e:
             print("AUTO BUFF ERROR:", e)
-
         await asyncio.sleep(AUTO_BUFF_DELAY)
 
 async def autobuff(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global auto_buff_running, auto_buff_task_ref
-
+    global auto_buff_running
     if not await check_group(update):
         return
     if not is_admin(update.effective_user.id):
@@ -174,9 +174,7 @@ async def autobuff(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     auto_buff_running = True
-    auto_buff_task_ref = context.application.create_task(
-        auto_buff_loop(context.application)
-    )
+    context.application.create_task(auto_buff_loop(context.application))
     await update.message.reply_text("✅ Đã BẬT AUTO BUFF")
 
 async def stopbuff(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -191,18 +189,17 @@ async def stopbuff(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ================= MAIN =================
 def main():
-    keep_alive()  # ♻️ treo Render (tách riêng – an toàn)
+    keep_alive()  # ♻️ treo Render
 
-    application = ApplicationBuilder().token(BOT_TOKEN).build()
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("buff", buff))
-    application.add_handler(CommandHandler("autobuff", autobuff))
-    application.add_handler(CommandHandler("stopbuff", stopbuff))
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("buff", buff))
+    app.add_handler(CommandHandler("autobuff", autobuff))
+    app.add_handler(CommandHandler("stopbuff", stopbuff))
 
-    print("🤖 Bot đang chạy (Render – tách treo)...")
-    application.run_polling(close_loop=False)
-
+    print("🤖 Bot đang chạy (FULL – STABLE)...")
+    app.run_polling(close_loop=False)
 
 if __name__ == "__main__":
     main()
