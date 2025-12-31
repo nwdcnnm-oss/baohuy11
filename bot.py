@@ -1,35 +1,41 @@
-import aiohttp
-import asyncio
-import re
-import logging
+import os
 import json
+import logging
+import asyncio
+import aiohttp
+import re
+import pytz
 from datetime import datetime
-import pytz 
-from html import escape 
+from html import escape
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, Application
 from telegram.error import BadRequest, Forbidden
 
-# ================== CẤU HÌNH HỆ THỐNG ==================
-
-# 👇 NHẬP TOKEN CỦA BẠN VÀO ĐÂY
-BOT_TOKEN = "8080338995:AAGJcUCZvBaLSjgHJfjpiWK6a-xFBa4TCEU" 
-
-# ID Admin (Người được dùng lệnh /autobuff)
-ADMINS = [5736655322] 
-
-# Danh sách API
-API_ENDPOINTS = [
-    "https://abcdxyz310107.x10.mx/apifl.php?fl1={}",
-    "https://abcdxyz310107.x10.mx/apifl.php?fl2={}"
-]
-
-# Cấu hình mạng
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "application/json, text/javascript, */*; q=0.01"
+# ================== CẤU HÌNH (CONFIG) ==================
+CONFIG = {
+    # 👇 Thay Token của bạn vào đây
+    "BOT_TOKEN": "8080338995:AAGJcUCZvBaLSjgHJfjpiWK6a-xFBa4TCEU",
+    
+    # 👇 ID Admin (Người được dùng lệnh quản lý)
+    "ADMINS": [5736655322],
+    
+    # 👇 Các nguồn API (Link dự phòng)
+    "API_URLS": [
+        "https://abcdxyz310107.x10.mx/apifl.php?fl1={}",
+        "https://abcdxyz310107.x10.mx/apifl.php?fl2={}"
+    ],
+    
+    # Thời gian cập nhật auto (giây) - Mặc định 15 phút
+    "INTERVAL": 900, 
+    
+    # File lưu dữ liệu
+    "DB_FILE": "database.json"
 }
-TIMEOUT = aiohttp.ClientTimeout(total=36) # 20s timeout
+
+# Cấu hình Web Request
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+}
 VN_TZ = pytz.timezone('Asia/Ho_Chi_Minh')
 
 # Logging
@@ -39,277 +45,306 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Bộ nhớ tạm
-AUTO_BUFF = {}
+# Biến toàn cục lưu dữ liệu Auto
+AUTO_DB = {}
 
-# Import Keep Alive
-try:
-    from keep_alive import keep_alive
-except ImportError:
-    def keep_alive(): pass
+# ================== MODULE DATABASE (LƯU TRỮ) ==================
 
-# ================== HÀM XỬ LÝ DỮ LIỆU (QUAN TRỌNG) ==================
+def load_database():
+    """Đọc dữ liệu từ file JSON khi khởi động"""
+    global AUTO_DB
+    if os.path.exists(CONFIG["DB_FILE"]):
+        try:
+            with open(CONFIG["DB_FILE"], 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                # Chuyển key từ string về int (do JSON lưu key là string)
+                AUTO_DB = {int(k): v for k, v in data.items()}
+            logger.info(f"✅ Đã tải lại {len(AUTO_DB)} tác vụ Auto từ Database.")
+        except Exception as e:
+            logger.error(f"❌ Lỗi đọc Database: {e}")
+            AUTO_DB = {}
+
+def save_database():
+    """Lưu dữ liệu hiện tại vào file JSON"""
+    try:
+        with open(CONFIG["DB_FILE"], 'w', encoding='utf-8') as f:
+            json.dump(AUTO_DB, f, ensure_ascii=False, indent=4)
+    except Exception as e:
+        logger.error(f"❌ Lỗi lưu Database: {e}")
+
+# ================== MODULE API & XỬ LÝ SỐ LIỆU ==================
 
 def clean_string(text):
-    """Lọc tên người dùng cho sạch đẹp"""
     if not text: return "Unknown"
     return re.sub(r'[^\w\s\-\.]', '', str(text)).strip()
 
-def parse_data(text):
-    """
-    Phân tích dữ liệu JSON chính xác cho API của bạn
-    Hỗ trợ các key: followers_increased, followers_before, followers_now
-    """
+def parse_api_response(text):
+    """Phân tích JSON thông minh"""
     if not text or len(text) < 5: return None
-    
-    nickname = "Unknown"
-    before = 0
-    plus = 0
-    current = 0
-
     try:
-        # Thử đọc JSON
         data = json.loads(text)
-        
-        if isinstance(data, dict):
-            # 1. Lấy Nickname
-            for k in ['nickname', 'name', 'username', 'user']:
-                if k in data and data[k]: nickname = str(data[k]); break
+        if not isinstance(data, dict): return None
 
-            # 2. Lấy Số Ban Đầu (Before)
-            # API của bạn: followers_before
-            for k in ['followers_before', 'before', 'start', 'trước', 'begin']:
-                if k in data and str(data[k]).isdigit(): before = int(data[k]); break
+        # Mapping các key có thể xuất hiện
+        nick_keys = ['nickname', 'name', 'username', 'user']
+        before_keys = ['followers_before', 'before', 'start', 'begin']
+        plus_keys = ['followers_increased', 'plus', 'add', 'increased']
+        curr_keys = ['followers_now', 'current', 'now', 'total']
 
-            # 3. Lấy Số Đã Tăng (Plus)
-            # API của bạn: followers_increased
-            for k in ['followers_increased', 'plus', 'add', 'tăng', 'increased']:
-                if k in data and str(data[k]).isdigit(): plus = int(data[k]); break
+        nickname = next((str(data[k]) for k in nick_keys if k in data and data[k]), "Unknown")
+        before = next((int(data[k]) for k in before_keys if k in data and str(data[k]).isdigit()), 0)
+        plus = next((int(data[k]) for k in plus_keys if k in data and str(data[k]).isdigit()), 0)
+        current = next((int(data[k]) for k in curr_keys if k in data and str(data[k]).isdigit()), 0)
 
-            # 4. Lấy Số Hiện Tại (Current) - Để dự phòng tính toán
-            # API của bạn: followers_now
-            for k in ['followers_now', 'followers_total', 'current', 'now']:
-                if k in data and str(data[k]).isdigit(): current = int(data[k]); break
+        # Logic Fix lỗi tính toán
+        if plus == 0 and current > before: plus = current - before
+        if current == 0: current = before + plus
 
-            # === LOGIC TÍNH TOÁN ===
-            # Nếu API không trả về 'plus' nhưng có 'now' và 'before' -> Tự tính
-            if plus == 0 and current > before:
-                plus = current - before
-            
-            # Nếu API trả về plus > 0 nhưng không có current -> Tự tính current
-            if current == 0:
-                current = before + plus
-
-            # Chỉ trả về kết quả nếu tìm thấy ít nhất 1 thông số
-            if before > 0 or plus > 0 or current > 0:
-                return {
-                    "nickname": clean_string(nickname), 
-                    "before": before, 
-                    "plus": plus,
-                    "current": current
-                }
-
-    except json.JSONDecodeError:
-        pass # Nếu lỗi JSON thì bỏ qua
-    except Exception as e:
-        logger.error(f"Parse JSON Error: {e}")
-
-    return None
-
-async def call_api(session, url):
-    """Gọi API an toàn"""
-    try:
-        async with session.get(url, headers=HEADERS, ssl=False) as r:
-            if r.status == 200:
-                return await r.text()
+        if before > 0 or plus > 0 or current > 0:
+            return {
+                "nickname": clean_string(nickname),
+                "before": before,
+                "plus": plus,
+                "current": current
+            }
     except:
         pass
-    return ""
+    return None
 
-async def fetch_data_merged(username):
-    """Lấy dữ liệu từ nhiều nguồn và chọn kết quả tốt nhất"""
-    async with aiohttp.ClientSession(timeout=TIMEOUT) as session:
-        tasks = [call_api(session, url.format(username)) for url in API_ENDPOINTS]
-        raw_results = await asyncio.gather(*tasks)
+async def fetch_stats(username):
+    """Lấy dữ liệu từ API tốt nhất"""
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20)) as session:
+        tasks = []
+        for url in CONFIG["API_URLS"]:
+            tasks.append(session.get(url.format(username), headers=HEADERS, ssl=False))
+        
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        valid_data = []
+        for res in results:
+            if isinstance(res, aiohttp.ClientResponse) and res.status == 200:
+                text = await res.text()
+                parsed = parse_api_response(text)
+                if parsed: valid_data.append(parsed)
 
-    best_data = None
+    if not valid_data: return None
+    # Lấy kết quả có số lượng tăng cao nhất (chính xác nhất)
+    return max(valid_data, key=lambda x: x['plus'])
 
-    for raw in raw_results:
-        parsed = parse_data(raw)
-        if parsed:
-            # Logic chọn: Lấy cái nào có số tăng (plus) lớn nhất
-            if best_data is None or parsed['plus'] > best_data['plus']:
-                best_data = parsed
-            # Nếu plus bằng nhau thì lấy cái nào cập nhật số before mới nhất
-            elif parsed['plus'] == best_data['plus'] and parsed['before'] > best_data['before']:
-                best_data = parsed
-
-    return best_data
-
-def format_message(username, data):
-    """Tạo tin nhắn hiển thị đẹp mắt"""
-    time_now = datetime.now(VN_TZ).strftime("%H:%M:%S - %d/%m")
+def make_message(username, data):
+    """Tạo nội dung tin nhắn"""
+    time_str = datetime.now(VN_TZ).strftime("%H:%M:%S - %d/%m")
+    total = max(data['before'] + data['plus'], data['current'])
     
-    # Tính toán lại tổng để chắc chắn
-    total = data['before'] + data['plus']
-    # Nếu API có trả về current riêng thì dùng current đó (chính xác hơn)
-    if data.get('current', 0) > total:
-        total = data['current']
-
     return (
-        f"<b>🚀 HỆ THỐNG BUFF FOLLOW V5.0</b>\n"
+        f"<b>🚀 THEO DÕI TIẾN ĐỘ VIP</b>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"👤 <b>User:</b> <code>@{escape(username)}</code>\n"
         f"🏷 <b>Name:</b> {escape(data['nickname'])}\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"📉 <b>Gốc:</b> <code>{data['before']:,}</code>\n"
-        f"📈 <b>Đã tăng:</b> <code>+{data['plus']:,}</code>\n"
+        f"📈 <b>Tăng:</b> <code>+{data['plus']:,}</code>\n"
         f"📊 <b>Tổng:</b> <code>{total:,}</code>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"🕒 <b>Cập nhật:</b> <code>{time_now}</code>\n"
-        f"✅ <b>Trạng thái:</b> bú lồn r..."
+        f"🕒 <b>Cập nhật:</b> <code>{time_str}</code>\n"
+        f"✅ <b>Status:</b> Running..."
     )
 
-# ================== AUTO BUFF JOB ==================
+# ================== BOT JOB QUEUE (AUTO) ==================
 
-async def autobuff_job(context: ContextTypes.DEFAULT_TYPE):
+async def autobuff_task(context: ContextTypes.DEFAULT_TYPE):
     chat_id = context.job.chat_id
-    info = AUTO_BUFF.get(chat_id)
     
-    if not info:
+    # Kiểm tra xem user còn trong DB không (trường hợp bị xóa tay)
+    if chat_id not in AUTO_DB:
         context.job.schedule_removal()
         return
 
+    info = AUTO_DB[chat_id]
     username = info["username"]
     message_id = info["message_id"]
     last_plus = info.get("last_plus", -1)
 
-    result = await fetch_data_merged(username)
-    
-    # Nếu không lấy được dữ liệu hoặc số lượng không đổi -> Bỏ qua
-    if not result: return
-    if result["plus"] == last_plus: return
+    data = await fetch_stats(username)
 
-    new_text = format_message(username, result)
+    # Nếu không có dữ liệu hoặc số lượng không đổi -> Skip
+    if not data or data["plus"] == last_plus:
+        return
+
+    new_msg = make_message(username, data)
 
     try:
         await context.bot.edit_message_text(
             chat_id=chat_id,
             message_id=message_id,
-            text=new_text,
+            text=new_msg,
             parse_mode="HTML"
         )
-        # Cập nhật trạng thái mới
-        AUTO_BUFF[chat_id]["last_plus"] = result["plus"]
-    
+        # Cập nhật DB
+        AUTO_DB[chat_id]["last_plus"] = data["plus"]
+        save_database() # Lưu ngay lập tức
+        
     except BadRequest as e:
         if "Message to edit not found" in str(e):
-            # Tin nhắn bị xóa -> Dừng Auto
+            # Tin nhắn bị xóa -> Hủy Auto
             context.job.schedule_removal()
-            AUTO_BUFF.pop(chat_id, None)
-            try: await context.bot.send_message(chat_id, f"⚠️ Tin nhắn theo dõi {username} đã bị xóa. Đã dừng Auto.")
-            except: pass
+            del AUTO_DB[chat_id]
+            save_database()
+            await context.bot.send_message(chat_id, f"⚠️ Đã dừng Auto {username} do tin nhắn gốc bị xóa.")
     except Forbidden:
-        # Bot bị kick -> Dừng Auto
+        # Bot bị chặn -> Hủy Auto
         context.job.schedule_removal()
-        AUTO_BUFF.pop(chat_id, None)
+        if chat_id in AUTO_DB:
+            del AUTO_DB[chat_id]
+            save_database()
 
-# ================== BOT COMMANDS ==================
+# ================== HANDLERS (LỆNH) ==================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🔰 <b>MENU BUFF PRO V5.0</b>\n\n"
-        "🔸 <code>/buff user</code> : Kiểm tra tiến độ ngay\n"
-        "🔸 <code>/autobuff user</code> : Tự động cập nhật 15p/lần (Admin)\n"
-        "🔸 <code>/checkapi user</code> : Xem dữ liệu thô (Debug)\n"
-        "🔸 <code>/stopbuff</code> : Dừng chạy tự động",
+        "🔰 <b>BOT MANAGER PRO V2</b>\n\n"
+        "🔹 <code>/buff user</code> : Check thủ công\n"
+        "🔹 <code>/autobuff user</code> : Bật Auto (Admin)\n"
+        "🔹 <code>/stopbuff</code> : Tắt Auto\n"
+        "🔹 <code>/checkapi user</code> : Test API",
         parse_mode="HTML"
     )
 
 async def checkapi(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Lệnh Debug để xem API trả về cái gì"""
-    if not context.args: return await update.message.reply_text("❌ Nhập: /checkapi username")
-    
+    if not context.args: return await update.message.reply_text("❌ Nhập: /checkapi user")
     username = context.args[0].replace("@", "")
-    msg = await update.message.reply_text("🔍 Đang quét API...", parse_mode="HTML")
+    msg = await update.message.reply_text("🔍 Scanning...", parse_mode="HTML")
     
-    log_text = ""
-    async with aiohttp.ClientSession(timeout=TIMEOUT) as session:
-        for i, url in enumerate(API_ENDPOINTS):
-            raw = await call_api(session, url.format(username))
-            status = "✅ 200 OK" if raw else "❌ Error/Empty"
-            preview = (raw[:150] + "...") if len(raw) > 150 else raw
-            log_text += f"<b>API {i+1}:</b> {status}\n<code>{escape(preview)}</code>\n\n"
-            
-    await msg.edit_text(f"📡 <b>DỮ LIỆU GỐC:</b>\n{log_text}", parse_mode="HTML")
+    report = ""
+    async with aiohttp.ClientSession() as session:
+        for i, url in enumerate(CONFIG["API_URLS"]):
+            try:
+                async with session.get(url.format(username), headers=HEADERS, ssl=False, timeout=10) as res:
+                    txt = await res.text()
+                    stt = "✅ 200" if res.status == 200 else f"❌ {res.status}"
+                    preview = escape(txt[:100])
+                    report += f"<b>API {i+1}:</b> {stt}\n<code>{preview}...</code>\n\n"
+            except Exception as e:
+                report += f"<b>API {i+1}:</b> ❌ Error: {str(e)}\n\n"
+    
+    await msg.edit_text(f"📡 <b>API DEBUG:</b>\n{report}", parse_mode="HTML")
 
 async def buff(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        return await update.message.reply_text("❌ Nhập: <code>/buff username</code>", parse_mode="HTML")
-    
+    if not context.args: return await update.message.reply_text("❌ Nhập: /buff user")
     username = context.args[0].replace("@", "")
-    msg = await update.message.reply_text("⏳ <i>Đang tải dữ liệu...</i>", parse_mode="HTML")
+    msg = await update.message.reply_text("⏳ Đang tải...", parse_mode="HTML")
     
-    result = await fetch_data_merged(username)
-    
-    if not result:
-        return await msg.edit_text("⚠️ <b>Không tìm thấy dữ liệu!</b>\nKiểm tra lại User hoặc API.", parse_mode="HTML")
+    data = await fetch_stats(username)
+    if data:
+        await msg.edit_text(make_message(username, data), parse_mode="HTML")
+    else:
+        await msg.edit_text("⚠️ Không lấy được dữ liệu.", parse_mode="HTML")
 
-    await msg.edit_text(format_message(username, result), parse_mode="HTML")
-
-async def autobuff(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ADMINS:
-        return await update.message.reply_text("🔒 Chỉ Admin mới được dùng Auto.")
-        
-    if not context.args:
-        return await update.message.reply_text("❌ Nhập: <code>/autobuff username</code>", parse_mode="HTML")
-
+async def cmd_autobuff(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
     chat_id = update.effective_chat.id
-    username = context.args[0].replace("@", "")
+    
+    if user_id not in CONFIG["ADMINS"]:
+        return await update.message.reply_text("🔒 Lệnh dành cho Admin.")
+    
+    if not context.args:
+        return await update.message.reply_text("❌ Nhập: /autobuff user")
 
+    username = context.args[0].replace("@", "")
+    
     # Xóa job cũ nếu có
-    for job in context.job_queue.get_jobs_by_name(str(chat_id)):
-        job.schedule_removal()
+    current_jobs = context.job_queue.get_jobs_by_name(str(chat_id))
+    for job in current_jobs: job.schedule_removal()
 
-    msg = await update.message.reply_text(
-        f"✅ <b>Đã kích hoạt Auto Buff!</b>\n👤 User: <code>{username}</code>\n⏱ Cập nhật: 15 phút/lần",
-        parse_mode="HTML"
+    msg = await update.message.reply_text(f"✅ <b>Kích hoạt Auto:</b> {username}\n⏱ Refresh: {CONFIG['INTERVAL']}s", parse_mode="HTML")
+    
+    # 1. Lưu vào RAM
+    AUTO_DB[chat_id] = {
+        "username": username,
+        "message_id": msg.message_id,
+        "last_plus": -1
+    }
+    
+    # 2. Lưu vào File
+    save_database()
+    
+    # 3. Chạy Job
+    context.job_queue.run_repeating(
+        autobuff_task, 
+        interval=CONFIG['INTERVAL'], 
+        first=10, 
+        chat_id=chat_id, 
+        name=str(chat_id)
     )
-    
-    # Lưu info
-    AUTO_BUFF[chat_id] = {"username": username, "message_id": msg.message_id, "last_plus": -1}
-    
-    # Set Job: 900s = 15 phút. first=10s
-    context.job_queue.run_repeating(autobuff_job, interval=900, first=10, chat_id=chat_id, name=str(chat_id))
 
-async def stopbuff(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ADMINS: return
-    
+async def cmd_stopbuff(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in CONFIG["ADMINS"]: return
     chat_id = update.effective_chat.id
-    jobs = context.job_queue.get_jobs_by_name(str(chat_id))
     
+    jobs = context.job_queue.get_jobs_by_name(str(chat_id))
     if jobs:
         for job in jobs: job.schedule_removal()
-        AUTO_BUFF.pop(chat_id, None)
-        await update.message.reply_text("🛑 <b>Đã dừng Auto Buff.</b>", parse_mode="HTML")
+        
+        if chat_id in AUTO_DB:
+            del AUTO_DB[chat_id]
+            save_database()
+            
+        await update.message.reply_text("🛑 <b>Đã dừng Auto.</b>", parse_mode="HTML")
     else:
-        await update.message.reply_text("⚠️ Không có tiến trình nào đang chạy.")
+        await update.message.reply_text("⚠️ Không có tiến trình chạy.")
 
-# ================== MAIN ==================
+# ================== KHỞI ĐỘNG HỆ THỐNG ==================
+
+async def post_init(application: Application):
+    """Hàm chạy 1 lần khi bot khởi động để khôi phục Job"""
+    load_database()
+    if not AUTO_DB: return
+
+    count = 0
+    for chat_id, info in AUTO_DB.items():
+        try:
+            # Khôi phục job
+            application.job_queue.run_repeating(
+                autobuff_task,
+                interval=CONFIG['INTERVAL'],
+                first=10, # Chạy sau 10s khởi động
+                chat_id=chat_id,
+                name=str(chat_id)
+            )
+            count += 1
+        except Exception as e:
+            logger.error(f"Lỗi khôi phục Job ID {chat_id}: {e}")
+            
+    if count > 0:
+        print(f"♻️ ĐÃ KHÔI PHỤC {count} TIẾN TRÌNH AUTO!")
+        
+        # Gửi thông báo cho Admin biết bot đã reset và chạy lại
+        for admin_id in CONFIG["ADMINS"]:
+            try:
+                await application.bot.send_message(admin_id, f"♻️ Bot vừa khởi động lại. Đã khôi phục {count} tiến trình Auto.")
+            except: pass
+
 def main():
-    if "TOKEN_CUA_BAN" in BOT_TOKEN:
-        print("❌ LỖI: CHƯA NHẬP BOT TOKEN!")
+    if "TOKEN" in CONFIG["BOT_TOKEN"]:
+        print("❌ VUI LÒNG NHẬP TOKEN TRONG PHẦN CONFIG!")
         return
 
-    keep_alive() # Chạy Web Server
-    print("🚀 Bot đang chạy...")
+    # Chạy Web Server ảo để giữ bot sống (nếu chạy trên Replit/Render)
+    try:
+        from keep_alive import keep_alive
+        keep_alive()
+    except ImportError:
+        pass
+
+    print("🚀 Bot đang khởi động...")
     
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-    
+    # Build App với post_init
+    app = ApplicationBuilder().token(CONFIG["BOT_TOKEN"]).post_init(post_init).build()
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("buff", buff))
-    app.add_handler(CommandHandler("autobuff", autobuff))
-    app.add_handler(CommandHandler("stopbuff", stopbuff))
+    app.add_handler(CommandHandler("autobuff", cmd_autobuff))
+    app.add_handler(CommandHandler("stopbuff", cmd_stopbuff))
     app.add_handler(CommandHandler("checkapi", checkapi))
 
     app.run_polling()
