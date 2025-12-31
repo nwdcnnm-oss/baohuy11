@@ -1,196 +1,252 @@
-import aiohttp
 import asyncio
-import re
+import aiohttp
 import pytz
 import time
-import os
+import json
 from datetime import datetime
+from threading import Thread
+from flask import Flask
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
-from keep_alive import keep_alive
 
-# ================== CẤU HÌNH ==================
-# Token đã được làm sạch để tránh lỗi lặp ID
+# ================= KEEP ALIVE (RENDER) =================
+app_flask = Flask(__name__)
+
+@app_flask.route("/")
+def home():
+    return "Bot is alive!"
+
+def run_flask():
+    app_flask.run(host="0.0.0.0", port=8080)
+
+def keep_alive():
+    t = Thread(target=run_flask)
+    t.daemon = True
+    t.start()
+# ======================================================
+
+
+# ================= CONFIG =================
 BOT_TOKEN = "8080338995:AAHI8yhEUnJGgqEIDcaJ0eIKBGtuQpzQiX8"
 
 ALLOWED_GROUP_ID = -1002666964512
 ADMINS = [5736655322]
 
-# API Endpoint
 API_FL1 = "https://abcdxyz310107.x10.mx/apifl.php?fl1={}"
 API_FL2 = "https://abcdxyz310107.x10.mx/apifl.php?fl2={}"
 
-# Cấu hình múi giờ và Session
-VIETNAM_TZ = pytz.timezone('Asia/Ho_Chi_Minh')
+VIETNAM_TZ = pytz.timezone("Asia/Ho_Chi_Minh")
+
+API_TIMEOUT = 15
+API_RETRY = 2
+API_COOLDOWN = 600  # 10 phút
+
+AUTO_BUFF_DELAY = 60
+# =========================================
+
+
 session_instance = None
+auto_buff_running = False
+auto_buff_task_ref = None
 
-# ================== CƠ CHẾ KẾT NỐI TỐI ƯU ==================
+# ============ API STATUS ============
+api_status = {
+    "API_FL1": 0,
+    "API_FL2": 0
+}
 
-def get_now_vn():
-    """Lấy thời gian hiện tại định dạng Việt Nam"""
-    return datetime.now(VIETNAM_TZ).strftime("%H:%M:%S - %d/%m/%Y")
-
+# =============== SESSION ==================
 async def get_session():
-    """Dùng chung session và tăng Timeout lên 60s để chống delay server"""
     global session_instance
     if session_instance is None or session_instance.closed:
-        # Tăng timeout tổng lên 60s, connect timeout 15s
-        timeout = aiohttp.ClientTimeout(total=60, connect=15)
-        session_instance = aiohttp.ClientSession(timeout=timeout)
+        session_instance = aiohttp.ClientSession()
     return session_instance
 
-async def call_api_safe(url):
-    """Gọi API an toàn: Tự động bỏ qua nếu server lỗi hoặc lag"""
-    session = await get_session()
-    try:
-        async with session.get(url) as r:
-            if r.status == 200:
-                text = await r.text()
-                # Kiểm tra nội dung có chứa từ khóa hợp lệ không
-                if text and "nickname" in text.lower():
-                    return text.strip()
-    except Exception as e:
-        print(f"⚠️ Cảnh báo: Server phản hồi chậm hoặc lỗi kết nối: {url[:30]}...")
-    return None
+# =============== UTILS ====================
+def now_vn():
+    return datetime.now(VIETNAM_TZ).strftime("%H:%M:%S | %d/%m/%Y")
 
-def parse_data(text):
-    """Trích xuất dữ liệu từ văn bản API"""
-    if not text: return None
-    try:
-        nickname = re.search(r'nickname[:\s]*([^\n\r]+)', text, re.IGNORECASE)
-        before = re.search(r'follow\s*trước[:\s]*(\d+)', text, re.IGNORECASE)
-        plus = re.search(r'\+(\d+)', text)
-        
-        return {
-            "nickname": nickname.group(1).strip() if nickname else "N/A",
-            "before": int(before.group(1)) if before else 0,
-            "plus": int(plus.group(1)) if plus else 0
-        }
-    except:
-        return None
+async def check_group(update: Update):
+    if update.effective_chat is None:
+        return False
 
-# ================== LOGIC XỬ LÝ SONG SONG (DUAL-API) ==================
+    if update.effective_chat.id != ALLOWED_GROUP_ID:
+        await update.message.reply_text(
+            "❌ Xin lỗi, bot này chỉ hoạt động trong nhóm này:\n"
+            "👉 https://t.me/baohuydevs"
+        )
+        return False
+    return True
 
-async def process_dual_api(username):
-    """Chạy đồng thời 2 server để bù trừ lỗi cho nhau"""
-    # Gửi yêu cầu đi cùng lúc (Concurrency)
-    results = await asyncio.gather(
-        call_api_safe(API_FL1.format(username)),
-        call_api_safe(API_FL2.format(username))
+def is_admin(uid):
+    return uid in ADMINS
+
+# ============ FORMAT KẾT QUẢ ============
+def format_result(username, name, before, added):
+    total = before + added
+    time_now = datetime.now(VIETNAM_TZ).strftime("%H:%M:%S")
+
+    return (
+        "📊 KẾT QUẢ KIỂM TRA\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        f"👤 User: @{username}\n"
+        f"🏷 Tên: {name}\n"
+        f"📉 Gốc: {before}\n"
+        f"📈 Tăng: +{added}\n"
+        f"📊 Tổng: {total}\n"
+        f"🕒 Lúc: {time_now}\n"
+        "━━━━━━━━━━━━━━━━━━"
     )
-    
-    d1 = parse_data(results[0])
-    d2 = parse_data(results[1])
 
-    if not d1 and not d2:
-        return None # Cả 2 server đều không phản hồi
+# ============ API FALLBACK CORE ============
+def api_available(name: str):
+    return time.time() >= api_status.get(name, 0)
 
-    # Lấy thông tin hiển thị từ server nào sống
-    base_info = d1 if d1 else d2
-    # Cộng dồn số lượng follow tăng từ cả 2 nguồn
-    plus_total = (d1["plus"] if d1 else 0) + (d2["plus"] if d2 else 0)
-    
-    status_str = f"S1: {'✅' if d1 else '❌'} | S2: {'✅' if d2 else '❌'}"
-    
-    return {
-        "nickname": base_info["nickname"],
-        "before": base_info["before"],
-        "plus": plus_total,
-        "after": base_info["before"] + plus_total,
-        "status": status_str
-    }
+async def call_api_safe(name: str, url: str):
+    if not api_available(name):
+        return False, "Cooldown", None
 
-# ================== CÁC LỆNH ĐIỀU KHIỂN ==================
+    session = await get_session()
+
+    for i in range(API_RETRY + 1):
+        try:
+            async with session.get(url, timeout=API_TIMEOUT) as r:
+                text = await r.text()
+                return True, None, text
+
+        except asyncio.TimeoutError:
+            if i == API_RETRY:
+                api_status[name] = time.time() + API_COOLDOWN
+                return False, "Timeout", None
+
+        except Exception as e:
+            if i == API_RETRY:
+                api_status[name] = time.time() + API_COOLDOWN
+                return False, str(e), None
+
+# ============ BUFF CORE (ẨN API) ============
+async def do_buff(target_id: str):
+    tasks = []
+
+    if api_available("API_FL1"):
+        tasks.append(call_api_safe("API_FL1", API_FL1.format(target_id)))
+
+    if api_available("API_FL2"):
+        tasks.append(call_api_safe("API_FL2", API_FL2.format(target_id)))
+
+    if not tasks:
+        return "❌ Hệ thống đang bận, vui lòng thử lại sau"
+
+    results = await asyncio.gather(*tasks)
+
+    raw = None
+    for ok, _, data in results:
+        if ok and data:
+            raw = data
+            break
+
+    if not raw:
+        return "❌ Hệ thống đang bận, vui lòng thử lại sau"
+
+    try:
+        data = json.loads(raw)
+    except:
+        return "❌ Dữ liệu không hợp lệ"
+
+    username = data.get("username", target_id)
+    name = data.get("name", target_id)
+
+    before = int(data.get("before", data.get("old", 0)))
+    after  = int(data.get("after",  data.get("new", before)))
+
+    added = max(after - before, 0)
+
+    return format_result(username, name, before, added)
+
+# ================= COMMANDS =================
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_group(update):
+        return
+
+    await update.message.reply_text(
+        "🤖 Bot BUFF đang hoạt động\n\n"
+        "📌 /buff <id>\n"
+        "♻️ /autobuff\n"
+        "🛑 /stopbuff"
+    )
 
 async def buff(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Lệnh /buff cho người dùng"""
-    if update.effective_chat.id != ALLOWED_GROUP_ID: return
+    if not await check_group(update):
+        return
+
     if not context.args:
-        return await update.message.reply_text("⚠️ Cú pháp: `/buff <username>`")
+        await update.message.reply_text("❌ /buff <user_id>")
+        return
 
-    username = context.args[0]
-    sent_msg = await update.message.reply_text(f"⏳ Đang xử lý song song @{username}...\n(Hệ thống chờ phản hồi tối đa 60s)")
+    target_id = context.args[0]
+    msg = await update.message.reply_text("⏳ Đang xử lý...")
 
-    data = await process_dual_api(username)
-    
-    if not data:
-        return await sent_msg.edit_text("❌ **Lỗi Server:** Cả 2 API đều không phản hồi. Username sai hoặc server đang bảo trì.")
+    text = await do_buff(target_id)
+    await msg.edit_text(text)
 
-    res_msg = (
-        "✅ **BUFF HOÀN TẤT (DUAL-API)**\n\n"
-        f"👤 User: `@{username}`\n"
-        f"🏷 Nick: {data['nickname']}\n"
-        f"📉 Trước: {data['before']}\n"
-        f"📈 Tăng tổng: +{data['plus']}\n"
-        f"📊 Hiện tại: {data['after']}\n"
-        f"⚙️ Trạng thái: {data['status']}\n"
-        f"⏰ `{get_now_vn()}`"
-    )
-    await sent_msg.edit_text(res_msg, parse_mode="Markdown")
+async def auto_buff_loop(app):
+    global auto_buff_running
 
-async def autobuff_job(context: ContextTypes.DEFAULT_TYPE):
-    """Tiến trình chạy ngầm mỗi 15 phút"""
-    username = context.job.data
-    data = await process_dual_api(username)
-    if data:
-        report = (f"🔄 **[AUTO] CẬP NHẬT**\n"
-                  f"👤 `@{username}`: +{data['plus']} follow\n"
-                  f"📊 Tổng: {data['after']}\n"
-                  f"⏰ `{get_now_vn()}`")
-        await context.bot.send_message(context.job.chat_id, report, parse_mode="Markdown")
+    while auto_buff_running:
+        try:
+            text = await do_buff("auto")
+            await app.bot.send_message(ALLOWED_GROUP_ID, text)
+        except Exception as e:
+            print("AUTO BUFF ERROR:", e)
+
+        await asyncio.sleep(AUTO_BUFF_DELAY)
 
 async def autobuff(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Bật Autobuff (Admin)"""
-    if not update.effective_user.id in ADMINS: return
-    if not context.args: return
-    
-    username = context.args[0]
-    chat_id = update.effective_chat.id
-    
-    # Dọn dẹp job cũ
-    for j in context.job_queue.get_jobs_by_name(str(chat_id)): j.schedule_removal()
-    
-    # Chạy lặp lại 15p
-    context.job_queue.run_repeating(autobuff_job, interval=900, first=5, chat_id=chat_id, data=username, name=str(chat_id))
-    await update.message.reply_text(f"🚀 Đã kích hoạt Autobuff cho `@{username}`\n⏱ Tần suất: 15 phút/lần.")
+    global auto_buff_running, auto_buff_task_ref
 
-async def checkapi(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Kiểm tra tình trạng sống chết của API (Admin)"""
-    if not update.effective_user.id in ADMINS: return
-    m = await update.message.reply_text("🔍 Đang ping server...")
-    start = time.time()
-    r1, r2 = await asyncio.gather(call_api_safe(API_FL1.format("test")), call_api_safe(API_FL2.format("test")))
-    lat = round((time.time() - start) * 1000)
-    
-    status = (f"📊 **HỆ THỐNG API**\n"
-              f"S1: {'✅ ONLINE' if r1 else '❌ ERROR'}\n"
-              f"S2: {'✅ ONLINE' if r2 else '❌ ERROR'}\n"
-              f"⚡ Delay: {lat}ms\n"
-              f"🕒 `{get_now_vn()}`")
-    await m.edit_text(status, parse_mode="Markdown")
+    if not await check_group(update):
+        return
+
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ Chỉ ADMIN được dùng /autobuff")
+        return
+
+    if auto_buff_running:
+        await update.message.reply_text("⚠️ AUTO BUFF đang chạy rồi")
+        return
+
+    auto_buff_running = True
+    auto_buff_task_ref = context.application.create_task(
+        auto_buff_loop(context.application)
+    )
+
+    await update.message.reply_text("✅ Đã BẬT AUTO BUFF")
 
 async def stopbuff(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Dừng Autobuff (Admin)"""
-    if not update.effective_user.id in ADMINS: return
-    for j in context.job_queue.get_jobs_by_name(str(update.effective_chat.id)): j.schedule_removal()
-    await update.message.reply_text("🛑 Đã dừng tiến trình Autobuff.")
+    global auto_buff_running
 
-# ================== KHỞI CHẠY ==================
+    if not await check_group(update):
+        return
 
-async def post_init(application):
-    await get_session()
+    if not is_admin(update.effective_user.id):
+        return
 
-def main():
-    keep_alive() # Hàm giữ bot sống trên host
-    app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).build()
-    
+    auto_buff_running = False
+    await update.message.reply_text("🛑 Đã TẮT AUTO BUFF")
+
+# ================= MAIN =================
+async def main():
+    keep_alive()  # ♻️ Render keep alive
+
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("buff", buff))
     app.add_handler(CommandHandler("autobuff", autobuff))
     app.add_handler(CommandHandler("stopbuff", stopbuff))
-    app.add_handler(CommandHandler("checkapi", checkapi))
-    
-    print(f"🤖 Bot Online - Dual API Mode Active [{get_now_vn()}]")
-    app.run_polling()
+
+    print("🤖 Bot đang chạy (Render)...")
+    await app.run_polling()
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
