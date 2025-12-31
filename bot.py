@@ -8,7 +8,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from keep_alive import keep_alive
 
 # ================== CẤU HÌNH ==================
-BOT_TOKEN = "8080338995:AAHitAzhTUUb1XL0LB44BiJmOCgulA4fx38"
+BOT_TOKEN = "8080338995:AAHI8yhEUnJGgqEIDcaJ0eIKBGtuQpzQiX8"
 ALLOWED_GROUP_ID = -1002666964512
 
 API_FL1 = "https://abcdxyz310107.x10.mx/apifl.php?fl1={}"
