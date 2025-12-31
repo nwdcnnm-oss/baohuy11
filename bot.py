@@ -19,7 +19,7 @@ WRONG_GROUP_MSG = (
     "👉 https://t.me/baohuydevs"
 )
 
-TIMEOUT = aiohttp.ClientTimeout(total=20)
+TIMEOUT = aiohttp.ClientTimeout(total=36)
 # =============================================
 
 # Hàm lấy ngày giờ Việt Nam hiện tại
