@@ -23,7 +23,7 @@ except ImportError:
 # 1. CẤU HÌNH HỆ THỐNG (CONFIG)
 # ========================================================
 CONFIG = {
-    "BOT_TOKEN": os.getenv('BOT_TOKEN', 'default_token'),
+    "BOT_TOKEN": os.getenv('8080338995:AAFXhz1kjZsZlE3KUP_FCTis6bF3j0PIAKU'),
     "ADMINS": [5736655322],  # Thêm ID của Admin ở đây
     "API_URLS": [
         "https://abcdxyz310107.x10.mx/apifl.php?fl1={}",
