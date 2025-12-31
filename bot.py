@@ -9,7 +9,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from keep_alive import keep_alive
 
 # ================== CẤU HÌNH ==================
-BOT_TOKEN = "8080338995:8080338995:AAFXhz1kjZsZlE3KUP_FCTis6bF3j0PIAKU"
+BOT_TOKEN = "8080338995:AAHI8yhEUnJGgqEIDcaJ0eIKBGtuQpzQiX8"
 ALLOWED_GROUP_ID = -1002666964512
 ADMINS = [5736655322]
 
@@ -22,18 +22,21 @@ session_instance = None
 # ================== TIỆN ÍCH ==================
 
 def get_now_vn():
+    """Lấy thời gian thực tại Việt Nam"""
     return datetime.now(VIETNAM_TZ).strftime("%H:%M:%S - %d/%m/%Y")
 
 async def get_session():
+    """Dùng chung session để tăng tốc độ gọi API"""
     global session_instance
     if session_instance is None or session_instance.closed:
-        session_instance = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20))
+        timeout = aiohttp.ClientTimeout(total=25)
+        session_instance = aiohttp.ClientSession(timeout=timeout)
     return session_instance
 
 def is_admin(user_id: int):
     return user_id in ADMINS
 
-# ================== XỬ LÝ API ==================
+# ================== XỬ LÝ DỮ LIỆU ==================
 
 async def call_api(url):
     session = await get_session()
@@ -43,7 +46,7 @@ async def call_api(url):
                 text = await r.text()
                 return text.strip()
             return ""
-    except:
+    except Exception:
         return ""
 
 def parse_follow_data(text):
@@ -57,23 +60,21 @@ def parse_follow_data(text):
         "plus": int(plus.group(1)) if plus else 0
     }
 
-# ================== LOGIC AUTO RUN 2 API ==================
-
-async def run_dual_api_process(username):
-    """Hàm lõi để chạy song song 2 API và gộp kết quả"""
+async def run_dual_api_logic(username):
+    """Chạy song song 2 API và gộp kết quả"""
     res1, res2 = await asyncio.gather(
         call_api(API_FL1.format(username)),
         call_api(API_FL2.format(username))
     )
     
-    d1, d2 = parse_follow_data(res1), parse_follow_data(res2)
+    d1 = parse_follow_data(res1)
+    d2 = parse_follow_data(res2)
     
-    if not d1 and not d2:
-        return None
+    if not d1 and not d2: return None
 
+    # Ưu tiên lấy thông tin từ API có phản hồi
     nickname = d1["nickname"] if d1 else d2["nickname"]
     before = d1["before"] if d1 else d2["before"]
-    # Cộng dồn số follow tăng từ cả 2 API
     total_plus = (d1["plus"] if d1 else 0) + (d2["plus"] if d2 else 0)
     
     return {
@@ -83,100 +84,108 @@ async def run_dual_api_process(username):
         "after": before + total_plus
     }
 
-# ================== LỆNH BOT ==================
+# ================== CÁC LỆNH CHÍNH ==================
+
+async def buff(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.id != ALLOWED_GROUP_ID:
+        return # Chỉ chạy trong nhóm quy định
+    
+    if len(context.args) < 1:
+        await update.message.reply_text("⚠️ Cú pháp: `/buff <username>`", parse_mode="Markdown")
+        return
+
+    username = context.args[0]
+    sent_msg = await update.message.reply_text(f"⏳ Đang buff song song 2 API cho `@{username}`...")
+
+    data = await run_dual_api_logic(username)
+    if not data:
+        return await sent_msg.edit_text("❌ Lỗi: Cả 2 Server API không phản hồi hoặc sai Username.")
+
+    result = (
+        "✅ **BUFF THÀNH CÔNG (DUAL SERVER)**\n\n"
+        f"👤 User: `@{username}`\n"
+        f"🏷 Nickname: {data['nickname']}\n"
+        f"📉 Follow trước: {data['before']}\n"
+        f"📈 Tổng tăng: +{data['plus']}\n"
+        f"📊 Hiện tại: {data['after']}\n"
+        f"⏰ `{get_now_vn()}`"
+    )
+    await sent_msg.edit_text(result, parse_mode="Markdown")
 
 async def autobuff_job(context: ContextTypes.DEFAULT_TYPE):
-    """Tiến trình chạy ngầm: Tự động gọi 2 API mỗi chu kỳ"""
+    """Chạy ngầm mỗi 15 phút"""
     username = context.job.data
-    data = await run_dual_api_process(username)
+    data = await run_dual_api_logic(username)
     
     if data:
         text = (
-            "🔄 **[AUTOBUFF] HỆ THỐNG ĐÃ CHẠY**\n"
-            f"👤 User: `@{username}`\n"
-            f"🏷 Nickname: {data['nickname']}\n"
-            f"📈 Tổng tăng (2 API): +{data['plus']}\n"
-            f"📊 Hiện tại: {data['after']}\n"
+            "🔄 **[AUTO] CẬP NHẬT TRẠNG THÁI**\n"
+            f"👤 User: `@{username}` | Nickname: {data['nickname']}\n"
+            f"📈 Vừa tăng: +{data['plus']} follow\n"
+            f"📊 Tổng hiện tại: {data['after']}\n"
             f"⏰ Lúc: `{get_now_vn()}`"
         )
         await context.bot.send_message(context.job.chat_id, text, parse_mode="Markdown")
 
 async def autobuff(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id): return
-    if len(context.args) < 1:
-        return await update.message.reply_text("⚠️ Cú pháp: `/autobuff <username>`")
+    if len(context.args) < 1: return
 
     username = context.args[0]
     chat_id = update.effective_chat.id
     
-    # Dừng các job cũ cho chat này
-    for job in context.job_queue.get_jobs_by_name(str(chat_id)):
-        job.schedule_removal()
+    # Xóa các lịch trình cũ nếu đang chạy
+    current_jobs = context.job_queue.get_jobs_by_name(str(chat_id))
+    for job in current_jobs: job.schedule_removal()
 
-    # Thiết lập chạy mỗi 900 giây (15 phút)
+    # Chạy lặp lại mỗi 900 giây (15 phút)
     context.job_queue.run_repeating(
-        autobuff_job, 
-        interval=900, 
-        first=5, 
-        chat_id=chat_id, 
-        data=username, 
-        name=str(chat_id)
+        autobuff_job, interval=900, first=5, 
+        chat_id=chat_id, data=username, name=str(chat_id)
     )
     
-    await update.message.reply_text(
-        f"🚀 **Đã kích hoạt Autobuff Dual-API**\n👤 User: `@{username}`\n⏱ Chu kỳ: 15 phút/lần\n⚙️ Trạng thái: Chạy song song 2 Server",
-        parse_mode="Markdown"
-    )
+    await update.message.reply_text(f"🚀 Đã kích hoạt **Autobuff Dual-API** cho `@{username}`\n⏱ Tần suất: 15 phút/lần.", parse_mode="Markdown")
 
-async def buff(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Lệnh buff thủ công cũng chạy 2 API"""
-    if len(context.args) < 1: return
-    username = context.args[0]
-    msg = await update.message.reply_text(f"⏳ Đang buff song song 2 API cho @{username}...")
-    
-    data = await run_dual_api_process(username)
-    if not data:
-        return await msg.edit_text("❌ Lỗi: Cả 2 server API không phản hồi.")
-
-    result_text = (
-        "✅ **BUFF THÀNH CÔNG (DUAL SERVER)**\n"
-        f"👤 User: `@{username}`\n"
-        f"📉 Trước: {data['before']}\n"
-        f"📈 Tăng tổng: +{data['plus']}\n"
-        f"📊 Sau buff: {data['after']}\n"
-        f"⏰ {get_now_vn()}"
-    )
-    await msg.edit_text(result_text, parse_mode="Markdown")
-
-async def check_api(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def checkapi(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id): return
-    msg = await update.message.reply_text("🔍 Đang check 2 server...")
     
-    # Check song song để lấy tốc độ
+    msg = await update.message.reply_text("🔍 Đang kiểm tra kết nối server...")
     start = time.time()
+    
+    # Kiểm tra đồng thời cả 2 link
     r1, r2 = await asyncio.gather(call_api(API_FL1.format("test")), call_api(API_FL2.format("test")))
-    lat = round((time.time() - start) * 1000)
+    latency = round((time.time() - start) * 1000)
 
-    t = f"📊 **STATUS**\nS1: {'✅' if r1 else '❌'}\nS2: {'✅' if r2 else '❌'}\n⚡ Ping: {lat}ms\n🕒 {get_now_vn()}"
-    await msg.edit_text(t, parse_mode="Markdown")
+    res_text = (
+        "📊 **TÌNH TRẠNG HỆ THỐNG**\n\n"
+        f"🔹 Server 1: {'✅ Live' if r1 else '❌ Die'}\n"
+        f"🔹 Server 2: {'✅ Live' if r2 else '❌ Die'}\n"
+        f"⚡ Độ trễ: {latency}ms\n"
+        f"🕒 Giờ VN: `{get_now_vn()}`"
+    )
+    await msg.edit_text(res_text, parse_mode="Markdown")
 
 async def stopbuff(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id): return
-    for job in context.job_queue.get_jobs_by_name(str(update.effective_chat.id)):
-        job.schedule_removal()
-    await update.message.reply_text("🛑 Đã dừng Autobuff.")
+    jobs = context.job_queue.get_jobs_by_name(str(update.effective_chat.id))
+    for job in jobs: job.schedule_removal()
+    await update.message.reply_text("🛑 Đã dừng mọi tiến trình Autobuff.")
+
+# ================== KHỞI ĐỘNG ==================
 
 async def post_init(application):
-    await get_session()
+    await get_session() # Mở sẵn session khi bot lên nguồn
 
 def main():
-    keep_alive()
+    keep_alive() # Giữ bot sống trên các host như Replit
     app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).build()
+    
     app.add_handler(CommandHandler("buff", buff))
     app.add_handler(CommandHandler("autobuff", autobuff))
     app.add_handler(CommandHandler("stopbuff", stopbuff))
-    app.add_handler(CommandHandler("checkapi", check_api))
-    print(f"🤖 Bot Dual-API đang chạy... [{get_now_vn()}]")
+    app.add_handler(CommandHandler("checkapi", checkapi))
+    
+    print(f"🤖 Bot đã sẵn sàng! Token hợp lệ. [{get_now_vn()}]")
     app.run_polling()
 
 if __name__ == "__main__":
