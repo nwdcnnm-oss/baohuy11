@@ -73,7 +73,7 @@ def check_cooldown(user_id):
 # ============ HTTP SESSION ============
 session: aiohttp.ClientSession | None = None
 
-async def fetch_api(url, timeout=10):
+async def fetch_api(url, timeout=60):
     global session
     if session is None or session.closed:
         session = aiohttp.ClientSession(
