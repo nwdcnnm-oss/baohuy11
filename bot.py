@@ -25,13 +25,13 @@ API_CONFIG = {
 
 WRONG_GROUP_MSG = "❌ *Bot chỉ hoạt động trong nhóm được cấp phép\.*"
 
-COOLDOWN_TIME = 30
+COOLDOWN_TIME = 36
 USER_COOLDOWN = {}
 
 API_SEMAPHORE = asyncio.Semaphore(5)
 
-FAKE_DELAY_MIN = 4   # giây
-FAKE_DELAY_MAX = 6   # giây
+FAKE_DELAY_MIN = 36   # giây
+FAKE_DELAY_MAX = 36   # giây
 # ============================================
 
 logging.basicConfig(level=logging.INFO)
