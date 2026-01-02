@@ -23,16 +23,14 @@ API_CONFIG = {
     "fl2": ["https://abcdxyz310107.x10.mx/apifl.php?fl2={}"]
 }
 
+TX_API_URL = "https://suntxlive.onrender.com/api/sun/txlive"
+
 WRONG_GROUP_MSG = "❌ *Bot chỉ hoạt động trong nhóm được cấp phép\.*"
 
-COOLDOWN_TIME = 36
-USER_COOLDOWN = {}
-
 API_SEMAPHORE = asyncio.Semaphore(5)
-
-FAKE_DELAY_MIN = 36   # giây
-FAKE_DELAY_MAX = 36   # giây
-# ============================================
+FAKE_DELAY_MIN = 4
+FAKE_DELAY_MAX = 6
+# ===========================================
 
 logging.basicConfig(level=logging.INFO)
 
@@ -44,15 +42,14 @@ def get_vietnam_time():
 def esc(text):
     return escape_markdown(str(text or "Unknown"), version=2)
 
+def mention_user(user):
+    name = escape_markdown(user.first_name or "User", version=2)
+    return f"[{name}](tg://user?id={user.id})"
+
 # ============ CHECK GROUP ============
 async def check_group(update: Update):
     chat = update.effective_chat
     if not chat or chat.id != ALLOWED_GROUP_ID:
-        if chat and chat.type in ("group", "supergroup"):
-            try:
-                await chat.leave()
-            except:
-                pass
         if update.message:
             await update.message.reply_text(
                 WRONG_GROUP_MSG,
@@ -61,19 +58,10 @@ async def check_group(update: Update):
         return False
     return True
 
-# ============ COOLDOWN ============
-def check_cooldown(user_id):
-    now = datetime.now().timestamp()
-    last = USER_COOLDOWN.get(user_id, 0)
-    if now - last < COOLDOWN_TIME:
-        return True, int(COOLDOWN_TIME - (now - last))
-    USER_COOLDOWN[user_id] = now
-    return False, 0
-
 # ============ HTTP SESSION ============
 session: aiohttp.ClientSession | None = None
 
-async def fetch_api(url, timeout=60):
+async def fetch_api(url, timeout=12):
     global session
     if session is None or session.closed:
         session = aiohttp.ClientSession(
@@ -84,30 +72,41 @@ async def fetch_api(url, timeout=60):
         try:
             async with session.get(url, timeout=timeout) as resp:
                 if resp.status == 200:
-                    return (await resp.text()).strip()
-        except:
-            pass
+                    text = (await resp.text()).strip()
+                    return text if text else ""
+        except Exception as e:
+            logging.error(f"API error: {e}")
     return ""
 
-async def fetch_fastest_api(urls):
+async def fetch_fastest_api(urls, timeout=15):
     tasks = [asyncio.create_task(fetch_api(u)) for u in urls]
-    done, pending = await asyncio.wait(
-        tasks, return_when=asyncio.FIRST_COMPLETED
-    )
-    for p in pending:
-        p.cancel()
-    for d in done:
-        return d.result()
+    try:
+        while tasks:
+            done, pending = await asyncio.wait(
+                tasks,
+                timeout=timeout,
+                return_when=asyncio.FIRST_COMPLETED
+            )
+            for task in done:
+                try:
+                    res = task.result()
+                    if res:
+                        for p in pending:
+                            p.cancel()
+                        return res
+                except:
+                    pass
+            tasks = list(pending)
+    finally:
+        for t in tasks:
+            t.cancel()
     return ""
 
-# ============ PARSE RESULT ============
-def parse_result(text: str):
-    if not text:
-        return {"name": "Không rõ", "before": 0, "plus": 0}
-
+# ============ PARSE BUFF ============
+def parse_result(text):
     name = re.search(r'(nickname|name|tên)[:\s]*([^\n\r]+)', text, re.I)
-    before = re.search(r'(trước|before|old)[:\s]*(\d+)', text, re.I)
-    plus = re.search(r'(tăng|increase|\+)\s*(\d+)', text, re.I)
+    before = re.search(r'(trước|before)[:\s]*(\d+)', text, re.I)
+    plus = re.search(r'(\+|\btăng\b)[:\s]*(\d+)', text, re.I)
 
     return {
         "name": name.group(2).strip() if name else "Không rõ",
@@ -115,7 +114,7 @@ def parse_result(text: str):
         "plus": int(plus.group(2)) if plus else 0
     }
 
-# ============ CORE ============
+# ============ BUFF CORE ============
 async def handle_buff(update: Update, context: ContextTypes.DEFAULT_TYPE, mode: str):
     if not await check_group(update):
         return
@@ -127,57 +126,38 @@ async def handle_buff(update: Update, context: ContextTypes.DEFAULT_TYPE, mode: 
         )
         return
 
-    cd, remain = check_cooldown(update.effective_user.id)
-    if cd:
-        await update.message.reply_text(
-            f"⏳ Vui lòng đợi `{remain}s`",
-            parse_mode=ParseMode.MARKDOWN_V2
-        )
-        return
-
     username = context.args[0]
     safe_user = urllib.parse.quote(username)
+    caller = mention_user(update.effective_user)
 
     wait_msg = await update.message.reply_text(
-        "🌐 *Đang kết nối máy chủ\.\.\.*",
+        "⏳ *Đang tải dữ liệu từ API\.\.\.*",
         parse_mode=ParseMode.MARKDOWN_V2
     )
 
-    # ===== LOAD API NHANH =====
     urls = [u.format(safe_user) for u in API_CONFIG[mode]]
     raw = await fetch_fastest_api(urls)
 
     if not raw:
         await wait_msg.edit_text(
-            "⚠️ *API phản hồi chậm hoặc lỗi*",
+            "⚠️ *API không trả dữ liệu*",
             parse_mode=ParseMode.MARKDOWN_V2
         )
         return
 
-    data = parse_result(raw)  # ✅ ĐÃ LOAD XONG API
+    data = parse_result(raw)
 
-    # ===== GIẢ LẬP XỬ LÝ (TRẢ CHẬM) =====
-    fake_steps = [
-        "📡 Đã nhận dữ liệu từ máy chủ...",
-        "📊 Đang kiểm tra dữ liệu...",
-        "🔎 Đang xác minh kết quả...",
-        "🧮 Đang tổng hợp báo cáo..."
-    ]
+    for txt in ["📡 Đã nhận dữ liệu...", "🔎 Đang xử lý...", "📊 Tổng hợp kết quả..."]:
+        await wait_msg.edit_text(txt, parse_mode=ParseMode.MARKDOWN_V2)
+        await asyncio.sleep(random.uniform(1.0, 1.5))
 
-    delay = random.uniform(FAKE_DELAY_MIN, FAKE_DELAY_MAX)
-    step_delay = delay / len(fake_steps)
-
-    for step in fake_steps:
-        await wait_msg.edit_text(step, parse_mode=ParseMode.MARKDOWN_V2)
-        await asyncio.sleep(step_delay)
-
-    # ===== TRẢ KẾT QUẢ =====
     total = data["before"] + data["plus"]
 
     result = (
         f"✅ *BUFF THÀNH CÔNG \- {mode.upper()}*\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"👤 *User:* `@{esc(username)}`\n"
+        f"🙋 *Người dùng:* {caller}\n"
+        f"👤 *User buff:* `@{esc(username)}`\n"
         f"📛 *Tên:* {esc(data['name'])}\n"
         f"📊 *Trước:* `{data['before']}`\n"
         f"📈 *Tăng:* `+{data['plus']}`\n"
@@ -188,22 +168,73 @@ async def handle_buff(update: Update, context: ContextTypes.DEFAULT_TYPE, mode: 
 
     await wait_msg.edit_text(result, parse_mode=ParseMode.MARKDOWN_V2)
 
-# ============ COMMANDS ============
+# ============ TÀI XỈU ============
+async def fetch_tx_live():
+    try:
+        async with aiohttp.ClientSession(
+            headers={"User-Agent": "Mozilla/5.0"}
+        ) as session:
+            async with session.get(TX_API_URL, timeout=10) as resp:
+                if resp.status == 200:
+                    return await resp.json()
+    except Exception as e:
+        logging.error(f"TX API error: {e}")
+    return None
+
+async def taixiu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_group(update):
+        return
+
+    caller = mention_user(update.effective_user)
+
+    msg = await update.message.reply_text(
+        "🎲 *Đang load TÀI XỈU SUN LIVE\.\.\.*",
+        parse_mode=ParseMode.MARKDOWN_V2
+    )
+
+    await asyncio.sleep(1.5)
+    await msg.edit_text("📡 Kết nối máy chủ SUN LIVE...", parse_mode=ParseMode.MARKDOWN_V2)
+
+    data = await fetch_tx_live()
+    if not data:
+        await msg.edit_text(
+            "⚠️ *Không lấy được dữ liệu TÀI XỈU*",
+            parse_mode=ParseMode.MARKDOWN_V2
+        )
+        return
+
+    phien = data.get("phien", "???")
+    ketqua = data.get("ketqua", "???")
+    tong = data.get("tong", "???")
+    xucxac = data.get("xucxac", [])
+
+    xx = " - ".join(map(str, xucxac)) if isinstance(xucxac, list) else "?"
+
+    result = (
+        "🎲 *TÀI XỈU SUN LIVE*\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        f"🙋 *Người xem:* {caller}\n"
+        f"🆔 *Phiên:* `{phien}`\n"
+        f"🎯 *Kết quả:* *{ketqua}*\n"
+        f"🎲 *Xúc xắc:* `{xx}`\n"
+        f"➕ *Tổng:* `{tong}`\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        f"🕒 *Lúc:* {get_vietnam_time()}"
+    )
+
+    await msg.edit_text(result, parse_mode=ParseMode.MARKDOWN_V2)
+
+# ============ START ============
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_group(update):
         return
     await update.message.reply_text(
         "🤖 *Bot sẵn sàng*\n"
         "• `/fl1 <username>`\n"
-        "• `/fl2 <username>`",
+        "• `/fl2 <username>`\n"
+        "• `/tx` hoặc `/taixiu`",
         parse_mode=ParseMode.MARKDOWN_V2
     )
-
-async def fl1_cmd(update, context):
-    await handle_buff(update, context, "fl1")
-
-async def fl2_cmd(update, context):
-    await handle_buff(update, context, "fl2")
 
 # ============ MAIN ============
 def main():
@@ -211,8 +242,10 @@ def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("fl1", fl1_cmd))
-    app.add_handler(CommandHandler("fl2", fl2_cmd))
+    app.add_handler(CommandHandler("fl1", lambda u, c: handle_buff(u, c, "fl1")))
+    app.add_handler(CommandHandler("fl2", lambda u, c: handle_buff(u, c, "fl2")))
+    app.add_handler(CommandHandler("tx", taixiu_cmd))
+    app.add_handler(CommandHandler("taixiu", taixiu_cmd))
 
     print("=== BOT IS RUNNING ===")
     app.run_polling(drop_pending_updates=True)
