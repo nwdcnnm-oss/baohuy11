@@ -1,254 +1,211 @@
-import aiohttp
-import asyncio
-import re
-import urllib.parse
 import logging
-import random
-from datetime import datetime
-import pytz
-
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
-from telegram.constants import ParseMode
-from telegram.helpers import escape_markdown
-
+import os
 from keep_alive import keep_alive
 
-# ================== CONFIG ==================
-BOT_TOKEN = "8080338995:AAH7CTj8JlYfY6PEkSwLSzn832FaxfdSaP0"
-ALLOWED_GROUP_ID = -1002666964512
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    CallbackQueryHandler,
+    ContextTypes,
+)
 
-API_CONFIG = {
-    "fl1": ["https://abcdxyz310107.x10.mx/apifl.php?fl1={}"],
-    "fl2": ["https://abcdxyz310107.x10.mx/apifl.php?fl2={}"]
-}
+# ===== CONFIG =====
+TOKEN = os.environ.get("6367532329:AAF2adu5gd0NewX7-OtDEhv_9R-k1eTw18c")
+ADMIN_ID = 5736655322  # đổi thành telegram id của bạn
+PRICE = 1000
+QR_IMAGE = "https://sf-static.upanhlaylink.com/img/image_202602230bdbd1a9f78746c2495358efcf16d07a.jpg"  # link QR trực tiếp
 
-TX_API_URL = "https://suntxlive.onrender.com/api/sun/txlive"
+STOCK_FILE = "stock.txt"
+SOLD_FILE = "sold.txt"
+BALANCE_FILE = "balance.txt"
 
-WRONG_GROUP_MSG = "❌ *Bot chỉ hoạt động trong nhóm được cấp phép\.*"
-
-API_SEMAPHORE = asyncio.Semaphore(5)
-FAKE_DELAY_MIN = 4
-FAKE_DELAY_MAX = 6
-# ===========================================
+PENDING_NAP = {}
 
 logging.basicConfig(level=logging.INFO)
 
-# ============ UTILS ============
-def get_vietnam_time():
-    tz = pytz.timezone("Asia/Ho_Chi_Minh")
-    return datetime.now(tz).strftime("%H:%M:%S \- %d/%m/%Y")
+# ===== CHECK ADMIN PRIVATE =====
+def is_admin_private(update: Update):
+    return (
+        update.effective_user.id == ADMIN_ID
+        and update.effective_chat.type == "private"
+    )
 
-def esc(text):
-    return escape_markdown(str(text or "Unknown"), version=2)
+def is_admin(user_id):
+    return user_id == ADMIN_ID
 
-def mention_user(user):
-    name = escape_markdown(user.first_name or "User", version=2)
-    return f"[{name}](tg://user?id={user.id})"
+# ===== UTIL =====
+def load_balance():
+    data = {}
+    if os.path.exists(BALANCE_FILE):
+        with open(BALANCE_FILE, "r") as f:
+            for line in f:
+                user, money = line.strip().split("|")
+                data[int(user)] = int(money)
+    return data
 
-# ============ CHECK GROUP ============
-async def check_group(update: Update):
-    chat = update.effective_chat
-    if not chat or chat.id != ALLOWED_GROUP_ID:
-        if update.message:
-            await update.message.reply_text(
-                WRONG_GROUP_MSG,
-                parse_mode=ParseMode.MARKDOWN_V2
-            )
-        return False
-    return True
+def save_balance(data):
+    with open(BALANCE_FILE, "w") as f:
+        for user, money in data.items():
+            f.write(f"{user}|{money}\n")
 
-# ============ HTTP SESSION ============
-session: aiohttp.ClientSession | None = None
+def get_stock():
+    if not os.path.exists(STOCK_FILE):
+        return []
+    with open(STOCK_FILE, "r") as f:
+        return [x.strip() for x in f if x.strip()]
 
-async def fetch_api(url, timeout=12):
-    global session
-    if session is None or session.closed:
-        session = aiohttp.ClientSession(
-            headers={"User-Agent": "Mozilla/5.0"}
-        )
+def save_stock(data):
+    with open(STOCK_FILE, "w") as f:
+        for acc in data:
+            f.write(acc + "\n")
 
-    async with API_SEMAPHORE:
-        try:
-            async with session.get(url, timeout=timeout) as resp:
-                if resp.status == 200:
-                    text = (await resp.text()).strip()
-                    return text if text else ""
-        except Exception as e:
-            logging.error(f"API error: {e}")
-    return ""
+def add_sold(acc):
+    with open(SOLD_FILE, "a") as f:
+        f.write(acc + "\n")
 
-async def fetch_fastest_api(urls, timeout=15):
-    tasks = [asyncio.create_task(fetch_api(u)) for u in urls]
+# ===== USER =====
+async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    data = load_balance()
+    user_id = update.effective_user.id
+    money = data.get(user_id, 0)
+    await update.message.reply_text(f"💰 Số dư: {money:,} VND")
+
+async def stockrd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    stock = get_stock()
+    await update.message.reply_text(f"📦 Còn lại: {len(stock)} RDP")
+
+async def nap(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if len(context.args) == 0:
+        await update.message.reply_text("Dùng: /nap 50000")
+        return
+
     try:
-        while tasks:
-            done, pending = await asyncio.wait(
-                tasks,
-                timeout=timeout,
-                return_when=asyncio.FIRST_COMPLETED
-            )
-            for task in done:
-                try:
-                    res = task.result()
-                    if res:
-                        for p in pending:
-                            p.cancel()
-                        return res
-                except:
-                    pass
-            tasks = list(pending)
-    finally:
-        for t in tasks:
-            t.cancel()
-    return ""
-
-# ============ PARSE BUFF ============
-def parse_result(text):
-    name = re.search(r'(nickname|name|tên)[:\s]*([^\n\r]+)', text, re.I)
-    before = re.search(r'(trước|before)[:\s]*(\d+)', text, re.I)
-    plus = re.search(r'(\+|\btăng\b)[:\s]*(\d+)', text, re.I)
-
-    return {
-        "name": name.group(2).strip() if name else "Không rõ",
-        "before": int(before.group(2)) if before else 0,
-        "plus": int(plus.group(2)) if plus else 0
-    }
-
-# ============ BUFF CORE ============
-async def handle_buff(update: Update, context: ContextTypes.DEFAULT_TYPE, mode: str):
-    if not await check_group(update):
+        amount = int(context.args[0])
+    except:
+        await update.message.reply_text("Số tiền không hợp lệ.")
         return
 
-    if not context.args:
-        await update.message.reply_text(
-            f"❌ Cú pháp: `/{mode} <username>`",
-            parse_mode=ParseMode.MARKDOWN_V2
-        )
-        return
+    user_id = update.effective_user.id
+    PENDING_NAP[user_id] = amount
 
-    username = context.args[0]
-    safe_user = urllib.parse.quote(username)
-    caller = mention_user(update.effective_user)
-
-    wait_msg = await update.message.reply_text(
-        "⏳ *Đang tải dữ liệu từ API\.\.\.*",
-        parse_mode=ParseMode.MARKDOWN_V2
+    caption = (
+        f"💳 NẠP {amount:,} VND\n\n"
+        f"📌 Quét QR bên dưới\n"
+        f"📌 Nội dung: {user_id}\n\n"
+        f"Chờ admin duyệt."
     )
 
-    urls = [u.format(safe_user) for u in API_CONFIG[mode]]
-    raw = await fetch_fastest_api(urls)
+    await update.message.reply_photo(photo=QR_IMAGE, caption=caption)
 
-    if not raw:
-        await wait_msg.edit_text(
-            "⚠️ *API không trả dữ liệu*",
-            parse_mode=ParseMode.MARKDOWN_V2
-        )
-        return
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Duyệt", callback_data=f"approve_{user_id}"),
+            InlineKeyboardButton("❌ Từ chối", callback_data=f"reject_{user_id}")
+        ]
+    ])
 
-    data = parse_result(raw)
-
-    for txt in ["📡 Đã nhận dữ liệu...", "🔎 Đang xử lý...", "📊 Tổng hợp kết quả..."]:
-        await wait_msg.edit_text(txt, parse_mode=ParseMode.MARKDOWN_V2)
-        await asyncio.sleep(random.uniform(1.0, 1.5))
-
-    total = data["before"] + data["plus"]
-
-    result = (
-        f"✅ *BUFF THÀNH CÔNG \- {mode.upper()}*\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"🙋 *Người dùng:* {caller}\n"
-        f"👤 *User buff:* `@{esc(username)}`\n"
-        f"📛 *Tên:* {esc(data['name'])}\n"
-        f"📊 *Trước:* `{data['before']}`\n"
-        f"📈 *Tăng:* `+{data['plus']}`\n"
-        f"✨ *Tổng:* `{total}`\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"🕒 *Lúc:* {get_vietnam_time()}"
+    await context.bot.send_message(
+        chat_id=ADMIN_ID,
+        text=f"💰 User {user_id} nạp {amount:,} VND",
+        reply_markup=keyboard
     )
 
-    await wait_msg.edit_text(result, parse_mode=ParseMode.MARKDOWN_V2)
+async def buyrd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    balances = load_balance()
+    user_id = update.effective_user.id
+    money = balances.get(user_id, 0)
 
-# ============ TÀI XỈU ============
-async def fetch_tx_live():
-    try:
-        async with aiohttp.ClientSession(
-            headers={"User-Agent": "Mozilla/5.0"}
-        ) as session:
-            async with session.get(TX_API_URL, timeout=10) as resp:
-                if resp.status == 200:
-                    return await resp.json()
-    except Exception as e:
-        logging.error(f"TX API error: {e}")
-    return None
-
-async def taixiu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_group(update):
+    if money < PRICE:
+        await update.message.reply_text("❌ Không đủ số dư.")
         return
 
-    caller = mention_user(update.effective_user)
-
-    msg = await update.message.reply_text(
-        "🎲 *Đang load TÀI XỈU SUN LIVE\.\.\.*",
-        parse_mode=ParseMode.MARKDOWN_V2
-    )
-
-    await asyncio.sleep(1.5)
-    await msg.edit_text("📡 Kết nối máy chủ SUN LIVE...", parse_mode=ParseMode.MARKDOWN_V2)
-
-    data = await fetch_tx_live()
-    if not data:
-        await msg.edit_text(
-            "⚠️ *Không lấy được dữ liệu TÀI XỈU*",
-            parse_mode=ParseMode.MARKDOWN_V2
-        )
+    stock = get_stock()
+    if not stock:
+        await update.message.reply_text("❌ Hết RDP.")
         return
 
-    phien = data.get("phien", "???")
-    ketqua = data.get("ketqua", "???")
-    tong = data.get("tong", "???")
-    xucxac = data.get("xucxac", [])
+    acc = stock.pop(0)
+    save_stock(stock)
+    add_sold(acc)
 
-    xx = " - ".join(map(str, xucxac)) if isinstance(xucxac, list) else "?"
+    balances[user_id] -= PRICE
+    save_balance(balances)
 
-    result = (
-        "🎲 *TÀI XỈU SUN LIVE*\n"
-        "━━━━━━━━━━━━━━━━━━\n"
-        f"🙋 *Người xem:* {caller}\n"
-        f"🆔 *Phiên:* `{phien}`\n"
-        f"🎯 *Kết quả:* *{ketqua}*\n"
-        f"🎲 *Xúc xắc:* `{xx}`\n"
-        f"➕ *Tổng:* `{tong}`\n"
-        "━━━━━━━━━━━━━━━━━━\n"
-        f"🕒 *Lúc:* {get_vietnam_time()}"
-    )
-
-    await msg.edit_text(result, parse_mode=ParseMode.MARKDOWN_V2)
-
-# ============ START ============
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_group(update):
-        return
     await update.message.reply_text(
-        "🤖 *Bot sẵn sàng*\n"
-        "• `/fl1 <username>`\n"
-        "• `/fl2 <username>`\n"
-        "• `/tx` hoặc `/taixiu`",
-        parse_mode=ParseMode.MARKDOWN_V2
+        f"✅ Mua thành công!\n\n🖥 RDP:\n{acc}"
     )
 
-# ============ MAIN ============
+# ===== ADMIN BUTTON =====
+async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    if query.from_user.id != ADMIN_ID:
+        return
+
+    if query.message.chat.type != "private":
+        return
+
+    action, user_id = query.data.split("_")
+    user_id = int(user_id)
+
+    if user_id not in PENDING_NAP:
+        await query.edit_message_text("Yêu cầu không tồn tại.")
+        return
+
+    amount = PENDING_NAP[user_id]
+    balances = load_balance()
+
+    if action == "approve":
+        balances[user_id] = balances.get(user_id, 0) + amount
+        save_balance(balances)
+
+        await context.bot.send_message(
+            chat_id=user_id,
+            text=f"✅ Nạp thành công {amount:,} VND"
+        )
+        await query.edit_message_text("✅ Đã duyệt.")
+
+    elif action == "reject":
+        await context.bot.send_message(
+            chat_id=user_id,
+            text="❌ Yêu cầu bị từ chối."
+        )
+        await query.edit_message_text("❌ Đã từ chối.")
+
+    del PENDING_NAP[user_id]
+
+# ===== ADMIN COMMAND =====
+async def addacc(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin_private(update):
+        return
+
+    if len(context.args) == 0:
+        await update.message.reply_text("Dùng: /addacc user|pass")
+        return
+
+    acc = " ".join(context.args)
+    with open(STOCK_FILE, "a") as f:
+        f.write(acc + "\n")
+
+    await update.message.reply_text("✅ Đã thêm vào stock.")
+
+# ===== MAIN =====
 def main():
-    keep_alive()
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app = ApplicationBuilder().token(TOKEN).build()
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("fl1", lambda u, c: handle_buff(u, c, "fl1")))
-    app.add_handler(CommandHandler("fl2", lambda u, c: handle_buff(u, c, "fl2")))
-    app.add_handler(CommandHandler("tx", taixiu_cmd))
-    app.add_handler(CommandHandler("taixiu", taixiu_cmd))
+    app.add_handler(CommandHandler("balance", balance))
+    app.add_handler(CommandHandler("stockrd", stockrd))
+    app.add_handler(CommandHandler("nap", nap))
+    app.add_handler(CommandHandler("buyrd", buyrd))
+    app.add_handler(CommandHandler("addacc", addacc))
 
-    print("=== BOT IS RUNNING ===")
-    app.run_polling(drop_pending_updates=True)
+    app.add_handler(CallbackQueryHandler(handle_buttons))
+
+    print("Bot đang chạy...")
+    app.run_polling()
 
 if __name__ == "__main__":
+    keep_alive()
     main()
