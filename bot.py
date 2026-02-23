@@ -11,10 +11,9 @@ from telegram.ext import (
 
 # ====== CONFIG ======
 TOKEN = "6367532329:AAFwf8IiA6VxhysLCr30dwvPYY7gn2XypWA"
-ADMIN_ID = 5736655322       # Telegram ID admin
-PRICE_RDP = 1000         # Giá 1 RDP
+ADMIN_ID = 5736655322
 
-# QR ảnh riêng của bạn (user quét là chuyển)
+PRICE_FILE = "price.json"
 MY_QR_IMAGE = "https://sf-static.upanhlaylink.com/img/image_202602230bdbd1a9f78746c2495358efcf16d07a.jpg"
 # ====================
 
@@ -39,17 +38,26 @@ def get_stock(): return load_json(STOCK_FILE, [])
 def get_sold(): return load_json(SOLD_FILE, [])
 def get_pending(): return load_json(PENDING_FILE, {})
 
+def get_price():
+    if not os.path.exists(PRICE_FILE):
+        save_json(PRICE_FILE, {"price": 20000})
+    return load_json(PRICE_FILE, {"price": 20000})["price"]
+
+def set_price(new_price: int):
+    save_json(PRICE_FILE, {"price": new_price})
+
 def require_admin_private(update: Update):
     return update.effective_user.id == ADMIN_ID and update.message.chat.type == "private"
 
 # ====== USER COMMANDS ======
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    price = get_price()
     await update.message.reply_text(
         "🖥 BOT BÁN RDP AUTO\n"
         "/balance - xem số dư\n"
         "/nap <số tiền> - nạp bằng QR\n"
-        "/buyrd - mua 1 RDP\n"
+        f"/buyrd - mua 1 RDP (Giá: {price:,}đ)\n"
         "/stockrd - xem kho RDP"
     )
 
@@ -65,14 +73,15 @@ async def stockrd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def nap(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        return await update.message.reply_text("❌ Cú pháp: /nap 50000")
+        return await update.message.reply_text("❌ Cú pháp: /nap <số tiền>")
 
+    raw = context.args[0].replace(".", "").replace(",", "")
     try:
-        amount = int(context.args[0])
+        amount = int(raw)
         if amount <= 0:
             raise Exception()
     except:
-        return await update.message.reply_text("❌ Số tiền không hợp lệ")
+        return await update.message.reply_text("❌ Số tiền không hợp lệ. Ví dụ: /nap 50000")
 
     uid = str(update.effective_user.id)
 
@@ -85,9 +94,9 @@ async def nap(update: Update, context: ContextTypes.DEFAULT_TYPE):
         photo=MY_QR_IMAGE,
         caption=(
             f"💳 *NẠP TIỀN BẰNG QR*\n\n"
-            f"💰 Số tiền: {amount:,}đ\n\n"
-            f"👉 Quét QR ở trên bằng app ngân hàng để chuyển khoản.\n"
-            f"Quét xong là chờ admin duyệt."
+            f"💰 Số tiền bạn yêu cầu nạp: {amount:,}đ\n\n"
+            f"👉 Quét QR trên để chuyển khoản đúng số tiền.\n"
+            f"Sau khi chuyển xong, chờ admin duyệt."
         ),
         parse_mode="Markdown"
     )
@@ -101,7 +110,7 @@ async def nap(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await context.bot.send_message(
         ADMIN_ID,
-        f"📥 YÊU CẦU NẠP (QR RIÊNG)\n\nUser: {uid}\nSố tiền: {amount:,}đ",
+        f"📥 YÊU CẦU NẠP QR\n\nUser: {uid}\nSố tiền user nhập: {amount:,}đ",
         reply_markup=keyboard
     )
 
@@ -111,14 +120,16 @@ async def buyrd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     stock = get_stock()
     sold = get_sold()
 
-    if users.get(uid, 0) < PRICE_RDP:
-        return await update.message.reply_text("❌ Số dư không đủ")
+    price = get_price()
+
+    if users.get(uid, 0) < price:
+        return await update.message.reply_text(f"❌ Số dư không đủ (Giá hiện tại: {price:,}đ)")
 
     if not stock:
         return await update.message.reply_text("❌ Hết RDP trong kho")
 
     acc = stock.pop(0)
-    users[uid] -= PRICE_RDP
+    users[uid] -= price
     sold.append(acc)
 
     save_json(USERS_FILE, users)
@@ -127,6 +138,7 @@ async def buyrd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         "✅ Mua RDP thành công!\n"
+        f"💵 Giá: {price:,}đ\n"
         f"👤 User: {acc['user']}\n"
         f"🔑 Pass: {acc['pass']}"
     )
@@ -177,6 +189,23 @@ async def sendsold(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = "\n".join([f"{i+1}. {x['user']}|{x['pass']}" for i, x in enumerate(sold)])
     await update.message.reply_text(text or "Chưa bán acc nào")
 
+async def setprice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not require_admin_private(update):
+        return await update.message.reply_text("🔐 Lệnh này chỉ admin dùng trong private chat")
+
+    if not context.args:
+        return await update.message.reply_text("❌ Cú pháp: /setprice 30000")
+
+    try:
+        new_price = int(context.args[0])
+        if new_price <= 0:
+            raise Exception()
+    except:
+        return await update.message.reply_text("❌ Giá không hợp lệ")
+
+    set_price(new_price)
+    await update.message.reply_text(f"✅ Đã đổi giá RDP thành {new_price:,}đ")
+
 # ====== APPROVE / REJECT BUTTON ======
 
 async def handle_approve_reject(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -222,6 +251,7 @@ app.add_handler(CommandHandler("checkacccuaban", checkacccuaban))
 app.add_handler(CommandHandler("checkaccban", checkaccban))
 app.add_handler(CommandHandler("sendstock", sendstock))
 app.add_handler(CommandHandler("sendsold", sendsold))
+app.add_handler(CommandHandler("setprice", setprice))
 
 app.add_handler(CallbackQueryHandler(handle_approve_reject))
 
