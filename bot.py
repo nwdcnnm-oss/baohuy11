@@ -1,219 +1,229 @@
-import logging
-import os
 from keep_alive import keep_alive
+keep_alive()
 
+import json
+import os
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    CallbackQueryHandler,
-    ContextTypes,
+    ApplicationBuilder, CommandHandler, ContextTypes,
+    CallbackQueryHandler
 )
 
-# ===== CONFIG =====
-TOKEN = os.environ.get("6367532329:AAFwf8IiA6VxhysLCr30dwvPYY7gn2XypWA")  # set trong Render
-ADMIN_ID = 123456789  # 👉 đổi thành Telegram ID của bạn
-PRICE = 50000
-QR_IMAGE = "https://i.ibb.co/nMPbYfXr/qr.png"
+# ====== CONFIG ======
+TOKEN = "6367532329:AAFwf8IiA6VxhysLCr30dwvPYY7gn2XypWA"
+ADMIN_ID = 5736655322       # Telegram ID admin
+PRICE_RDP = 1000         # Giá 1 RDP
 
-STOCK_FILE = "stock.txt"
-SOLD_FILE = "sold.txt"
-BALANCE_FILE = "balance.txt"
+# QR ảnh riêng của bạn (user quét là chuyển)
+MY_QR_IMAGE = "https://sf-static.upanhlaylink.com/img/image_202602230bdbd1a9f78746c2495358efcf16d07a.jpg"
+# ====================
 
-PENDING_NAP = {}
+USERS_FILE = "users.json"
+STOCK_FILE = "stock.json"
+SOLD_FILE = "sold.json"
+PENDING_FILE = "pending.json"
 
-logging.basicConfig(level=logging.INFO)
+def load_json(file, default):
+    if not os.path.exists(file):
+        with open(file, "w") as f:
+            json.dump(default, f)
+    with open(file, "r") as f:
+        return json.load(f)
 
-# ================= ADMIN CHECK =================
-def is_admin_private(update: Update):
-    return (
-        update.effective_user.id == ADMIN_ID
-        and update.effective_chat.type == "private"
-    )
+def save_json(file, data):
+    with open(file, "w") as f:
+        json.dump(data, f, indent=2)
 
-# ================= FILE =================
-def load_balance():
-    data = {}
-    if os.path.exists(BALANCE_FILE):
-        with open(BALANCE_FILE, "r") as f:
-            for line in f:
-                if "|" in line:
-                    user, money = line.strip().split("|")
-                    data[int(user)] = int(money)
-    return data
+def get_users(): return load_json(USERS_FILE, {})
+def get_stock(): return load_json(STOCK_FILE, [])
+def get_sold(): return load_json(SOLD_FILE, [])
+def get_pending(): return load_json(PENDING_FILE, {})
 
-def save_balance(data):
-    with open(BALANCE_FILE, "w") as f:
-        for user, money in data.items():
-            f.write(f"{user}|{money}\n")
+def require_admin_private(update: Update):
+    return update.effective_user.id == ADMIN_ID and update.message.chat.type == "private"
 
-def get_stock():
-    if not os.path.exists(STOCK_FILE):
-        return []
-    with open(STOCK_FILE, "r") as f:
-        return [x.strip() for x in f if x.strip()]
+# ====== USER COMMANDS ======
 
-def save_stock(data):
-    with open(STOCK_FILE, "w") as f:
-        for acc in data:
-            f.write(acc + "\n")
-
-def add_sold(acc):
-    with open(SOLD_FILE, "a") as f:
-        f.write(acc + "\n")
-
-# ================= COMMAND USER =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = (
-        "🤖 BOT BÁN RDP AUTO\n\n"
-        "/balance - Xem số dư\n"
-        "/nap <số tiền> - Nạp tiền\n"
-        "/buyrd - Mua 1 RDP\n"
-        "/stockrd - Xem kho\n"
+    await update.message.reply_text(
+        "🖥 BOT BÁN RDP AUTO\n"
+        "/balance - xem số dư\n"
+        "/nap <số tiền> - nạp bằng QR\n"
+        "/buyrd - mua 1 RDP\n"
+        "/stockrd - xem kho RDP"
     )
-
-    if is_admin_private(update):
-        text += "\n👑 /addacc user|pass - Thêm RDP"
-
-    await update.message.reply_text(text)
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await start(update, context)
 
 async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    data = load_balance()
-    money = data.get(update.effective_user.id, 0)
-    await update.message.reply_text(f"💰 Số dư: {money:,} VND")
+    uid = str(update.effective_user.id)
+    users = get_users()
+    bal = users.get(uid, 0)
+    await update.message.reply_text(f"💰 Số dư của bạn: {bal:,}đ")
 
 async def stockrd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     stock = get_stock()
-    await update.message.reply_text(f"📦 Còn {len(stock)} RDP trong kho")
+    await update.message.reply_text(f"📦 Kho còn: {len(stock)} RDP")
 
 async def nap(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("Dùng: /nap 50000")
-        return
+        return await update.message.reply_text("❌ Cú pháp: /nap 50000")
 
     try:
         amount = int(context.args[0])
+        if amount <= 0:
+            raise Exception()
     except:
-        await update.message.reply_text("Số tiền không hợp lệ.")
-        return
+        return await update.message.reply_text("❌ Số tiền không hợp lệ")
 
-    user_id = update.effective_user.id
-    PENDING_NAP[user_id] = amount
+    uid = str(update.effective_user.id)
 
-    caption = (
-        f"💳 NẠP {amount:,} VND\n"
-        f"Nội dung CK: {user_id}\n"
-        "Chờ admin duyệt."
+    pending = get_pending()
+    pending[uid] = {"user_id": uid, "amount": amount}
+    save_json(PENDING_FILE, pending)
+
+    await context.bot.send_photo(
+        chat_id=update.effective_chat.id,
+        photo=MY_QR_IMAGE,
+        caption=(
+            f"💳 *NẠP TIỀN BẰNG QR*\n\n"
+            f"💰 Số tiền: {amount:,}đ\n\n"
+            f"👉 Quét QR ở trên bằng app ngân hàng để chuyển khoản.\n"
+            f"Quét xong là chờ admin duyệt."
+        ),
+        parse_mode="Markdown"
     )
-
-    await update.message.reply_photo(photo=QR_IMAGE, caption=caption)
 
     keyboard = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("✅ Duyệt", callback_data=f"approve_{user_id}"),
-            InlineKeyboardButton("❌ Từ chối", callback_data=f"reject_{user_id}")
+            InlineKeyboardButton("✅ Duyệt", callback_data=f"approve|{uid}"),
+            InlineKeyboardButton("❌ Từ chối", callback_data=f"reject|{uid}")
         ]
     ])
 
     await context.bot.send_message(
-        chat_id=ADMIN_ID,
-        text=f"💰 User {user_id} nạp {amount:,} VND",
+        ADMIN_ID,
+        f"📥 YÊU CẦU NẠP (QR RIÊNG)\n\nUser: {uid}\nSố tiền: {amount:,}đ",
         reply_markup=keyboard
     )
 
 async def buyrd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    balances = load_balance()
-    user_id = update.effective_user.id
-
-    if balances.get(user_id, 0) < PRICE:
-        await update.message.reply_text("❌ Không đủ số dư.")
-        return
-
+    uid = str(update.effective_user.id)
+    users = get_users()
     stock = get_stock()
+    sold = get_sold()
+
+    if users.get(uid, 0) < PRICE_RDP:
+        return await update.message.reply_text("❌ Số dư không đủ")
+
     if not stock:
-        await update.message.reply_text("❌ Hết RDP.")
-        return
+        return await update.message.reply_text("❌ Hết RDP trong kho")
 
     acc = stock.pop(0)
-    save_stock(stock)
-    add_sold(acc)
+    users[uid] -= PRICE_RDP
+    sold.append(acc)
 
-    balances[user_id] -= PRICE
-    save_balance(balances)
+    save_json(USERS_FILE, users)
+    save_json(STOCK_FILE, stock)
+    save_json(SOLD_FILE, sold)
 
-    await update.message.reply_text(f"✅ Mua thành công!\n\n🖥 {acc}")
+    await update.message.reply_text(
+        "✅ Mua RDP thành công!\n"
+        f"👤 User: {acc['user']}\n"
+        f"🔑 Pass: {acc['pass']}"
+    )
 
-# ================= ADMIN =================
+# ====== ADMIN COMMANDS (PRIVATE ONLY) ======
+
 async def addacc(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin_private(update):
-        await update.message.reply_text("🔐 Chỉ admin private dùng lệnh này.")
-        return
+    if not require_admin_private(update):
+        return await update.message.reply_text("🔐 Lệnh này chỉ admin dùng trong private chat")
 
-    if not context.args:
-        await update.message.reply_text("Dùng: /addacc user|pass")
-        return
+    data = " ".join(context.args)
+    if "|" not in data:
+        return await update.message.reply_text("❌ /addacc user|pass")
 
-    acc = context.args[0]
+    user, pwd = data.split("|", 1)
+    stock = get_stock()
+    stock.append({"user": user, "pass": pwd})
+    save_json(STOCK_FILE, stock)
+    await update.message.reply_text("✅ Đã thêm acc RDP")
 
-    with open(STOCK_FILE, "a") as f:
-        f.write(acc + "\n")
+async def checkacccuaban(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not require_admin_private(update):
+        return await update.message.reply_text("🔐 Lệnh này chỉ admin dùng trong private chat")
 
-    await update.message.reply_text("✅ Đã thêm vào kho.")
+    stock = get_stock()
+    await update.message.reply_text(f"📦 Kho hiện tại: {len(stock)} acc")
 
-async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def checkaccban(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not require_admin_private(update):
+        return await update.message.reply_text("🔐 Lệnh này chỉ admin dùng trong private chat")
+
+    sold = get_sold()
+    await update.message.reply_text(f"📤 Đã bán: {len(sold)} acc")
+
+async def sendstock(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not require_admin_private(update):
+        return await update.message.reply_text("🔐 Lệnh này chỉ admin dùng trong private chat")
+
+    stock = get_stock()
+    text = "\n".join([f"{i+1}. {x['user']}|{x['pass']}" for i, x in enumerate(stock)])
+    await update.message.reply_text(text or "Kho trống")
+
+async def sendsold(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not require_admin_private(update):
+        return await update.message.reply_text("🔐 Lệnh này chỉ admin dùng trong private chat")
+
+    sold = get_sold()
+    text = "\n".join([f"{i+1}. {x['user']}|{x['pass']}" for i, x in enumerate(sold)])
+    await update.message.reply_text(text or "Chưa bán acc nào")
+
+# ====== APPROVE / REJECT BUTTON ======
+
+async def handle_approve_reject(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    if not is_admin_private(update):
-        return
+    if update.effective_user.id != ADMIN_ID:
+        return await query.edit_message_text("🔐 Lệnh này chỉ admin dùng trong private chat")
 
-    action, user_id = query.data.split("_")
-    user_id = int(user_id)
+    action, uid = query.data.split("|", 1)
+    pending = get_pending()
 
-    if user_id not in PENDING_NAP:
-        await query.edit_message_text("Yêu cầu không tồn tại.")
-        return
+    if uid not in pending:
+        return await query.edit_message_text("❌ Yêu cầu đã xử lý hoặc không tồn tại.")
 
-    amount = PENDING_NAP[user_id]
-    balances = load_balance()
+    amount = pending[uid]["amount"]
+    users = get_users()
 
     if action == "approve":
-        balances[user_id] = balances.get(user_id, 0) + amount
-        save_balance(balances)
-
-        await context.bot.send_message(
-            chat_id=user_id,
-            text=f"✅ Nạp thành công {amount:,} VND"
-        )
-        await query.edit_message_text("✅ Đã duyệt.")
+        users[uid] = users.get(uid, 0) + amount
+        save_json(USERS_FILE, users)
+        await context.bot.send_message(uid, f"✅ Nạp thành công {amount:,}đ!")
+        await query.edit_message_text(f"✅ Đã duyệt nạp {amount:,}đ cho user {uid}")
     else:
-        await context.bot.send_message(
-            chat_id=user_id,
-            text="❌ Yêu cầu bị từ chối."
-        )
-        await query.edit_message_text("❌ Đã từ chối.")
+        await context.bot.send_message(uid, "❌ Yêu cầu nạp của bạn bị từ chối.")
+        await query.edit_message_text(f"❌ Đã từ chối yêu cầu của user {uid}")
 
-    del PENDING_NAP[user_id]
+    pending.pop(uid)
+    save_json(PENDING_FILE, pending)
 
-# ================= MAIN =================
-def main():
-    app = ApplicationBuilder().token(TOKEN).build()
+# ====== MAIN ======
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("balance", balance))
-    app.add_handler(CommandHandler("stockrd", stockrd))
-    app.add_handler(CommandHandler("nap", nap))
-    app.add_handler(CommandHandler("buyrd", buyrd))
-    app.add_handler(CommandHandler("addacc", addacc))
-    app.add_handler(CallbackQueryHandler(handle_buttons))
+app = ApplicationBuilder().token(TOKEN).build()
 
-    print("🚀 Bot đang chạy...")
-    app.run_polling()
+app.add_handler(CommandHandler("start", start))
+app.add_handler(CommandHandler("balance", balance))
+app.add_handler(CommandHandler("nap", nap))
+app.add_handler(CommandHandler("buyrd", buyrd))
+app.add_handler(CommandHandler("stockrd", stockrd))
 
-if __name__ == "__main__":
-    keep_alive()
-    main()
+app.add_handler(CommandHandler("addacc", addacc))
+app.add_handler(CommandHandler("checkacccuaban", checkacccuaban))
+app.add_handler(CommandHandler("checkaccban", checkaccban))
+app.add_handler(CommandHandler("sendstock", sendstock))
+app.add_handler(CommandHandler("sendsold", sendsold))
+
+app.add_handler(CallbackQueryHandler(handle_approve_reject))
+
+print("🤖 BOT RDP AUTO đang chạy...")
+app.run_polling()
