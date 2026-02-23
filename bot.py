@@ -12,16 +12,14 @@ from telegram.ext import (
 )
 
 # ===== LOAD TOKEN =====
-TOKEN = os.environ.get("6367532329:AAF2adu5gd0NewX7-OtDEhv_9R-k1eTw18c")
+TOKEN = os.environ.get("6367532329:AAFEx-uO_wFBDwytzxH26FFkRurjLf69YHk")
 
 if not TOKEN:
-    print("❌ TOKEN chưa được set trong Environment Variables!")
+    print("❌ TOKEN chưa set Environment Variables!")
     sys.exit(1)
-else:
-    print("✅ TOKEN loaded thành công")
 
 # ===== CONFIG =====
-ADMIN_ID = 5736655322  # đổi thành telegram id của bạn
+ADMIN_ID = 5736655322  # 👉 đổi thành telegram id của bạn
 PRICE = 1000
 QR_IMAGE = "https://i.postimg.cc/15GBkR9p/IMG-3073.png"
 
@@ -33,14 +31,14 @@ PENDING_NAP = {}
 
 logging.basicConfig(level=logging.INFO)
 
-# ===== CHECK ADMIN PRIVATE =====
+# ================= ADMIN CHECK =================
 def is_admin_private(update: Update):
     return (
         update.effective_user.id == ADMIN_ID
         and update.effective_chat.type == "private"
     )
 
-# ===== UTIL =====
+# ================= FILE UTIL =================
 def load_balance():
     data = {}
     if os.path.exists(BALANCE_FILE):
@@ -71,11 +69,37 @@ def add_sold(acc):
     with open(SOLD_FILE, "a") as f:
         f.write(acc + "\n")
 
-# ===== USER =====
+# ================= USER COMMAND =================
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = (
+        "🤖 BOT BÁN RDP AUTO\n"
+        "━━━━━━━━━━━━━━━\n\n"
+        "📌 Lệnh người dùng:\n"
+        "/balance - Xem số dư\n"
+        "/nap <số tiền> - Nạp tiền\n"
+        "/buyrd - Mua 1 RDP\n"
+        "/stockrd - Xem số lượng còn\n"
+    )
+
+    if is_admin_private(update):
+        text += (
+            "\n👑 Lệnh Admin:\n"
+            "/addacc user|pass - Thêm RDP\n"
+        )
+
+    await update.message.reply_text(text)
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await start(update, context)
+
 async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = load_balance()
     money = data.get(update.effective_user.id, 0)
     await update.message.reply_text(f"💰 Số dư: {money:,} VND")
+
+async def stockrd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    stock = get_stock()
+    await update.message.reply_text(f"📦 Còn {len(stock)} RDP trong kho")
 
 async def nap(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
@@ -93,7 +117,7 @@ async def nap(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     caption = (
         f"💳 NẠP {amount:,} VND\n\n"
-        f"📌 Nội dung chuyển khoản: {user_id}\n"
+        f"📌 Nội dung CK: {user_id}\n"
         f"Chờ admin duyệt."
     )
 
@@ -134,7 +158,23 @@ async def buyrd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(f"✅ Mua thành công!\n\n🖥 {acc}")
 
-# ===== ADMIN BUTTON =====
+# ================= ADMIN =================
+async def addacc(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin_private(update):
+        await update.message.reply_text("🔐 Lệnh này chỉ admin dùng trong private chat")
+        return
+
+    if not context.args:
+        await update.message.reply_text("Dùng: /addacc user|pass")
+        return
+
+    acc = context.args[0]
+
+    with open(STOCK_FILE, "a") as f:
+        f.write(acc + "\n")
+
+    await update.message.reply_text("✅ Đã thêm vào kho.")
+
 async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -171,13 +211,17 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     del PENDING_NAP[user_id]
 
-# ===== MAIN =====
+# ================= MAIN =================
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("balance", balance))
+    app.add_handler(CommandHandler("stockrd", stockrd))
     app.add_handler(CommandHandler("nap", nap))
     app.add_handler(CommandHandler("buyrd", buyrd))
+    app.add_handler(CommandHandler("addacc", addacc))
     app.add_handler(CallbackQueryHandler(handle_buttons))
 
     print("🚀 Bot đang chạy...")
