@@ -3,12 +3,12 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, CallbackQueryHandler, MessageHandler, filters
 from keep_alive import keep_alive
 
-# ====== KEEP ALIVE (RENDER/REPLIT) ======
+# ====== KEEP ALIVE ======
 keep_alive()
 
 # ====== CONFIG ======
-TOKEN = "6367532329:AAFwf8IiA6VxhysLCr30dwvPYY7gn2XypWA"   # <-- DÁN TOKEN BOT CỦA BẠN
-ADMIN_ID = 5736655322     # <-- ID TELEGRAM ADMIN
+TOKEN = "6367532329:AAFwf8IiA6VxhysLCr30dwvPYY7gn2XypWA"
+ADMIN_ID = 5736655322
 MY_QR_IMAGE = "qr_bank.jpg"
 
 PRICE_FILE = "price.json"
@@ -50,21 +50,25 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🖥 HỆ THỐNG BÁN RDP\n\n"
         "🔹 /qr - Xem QR nạp tiền\n"
         "🔹 /nap <số tiền>\n"
-        "🔹 /balance - Xem số dư\n"
-        f"🔹 /buyrd - Mua 1 RDP (Giá {price:,}đ)\n"
-        "🔹 /stockrd - Xem kho"
+        "🔹 /balance\n"
+        f"🔹 /buyrd (Giá {price:,}đ)\n"
+        "🔹 /stockrd"
     )
     await update.message.reply_text(msg)
 
 async def send_qr(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if os.path.exists(MY_QR_IMAGE):
-        with open(MY_QR_IMAGE, "rb") as f:
-            await update.message.reply_photo(
-                f,
-                caption="💳 Quét QR để chuyển khoản\nSau đó dùng: /nap 50000"
-            )
-    else:
-        await update.message.reply_text("❌ Chưa có ảnh QR.")
+    try:
+        if os.path.exists(MY_QR_IMAGE):
+            with open(MY_QR_IMAGE, "rb") as f:
+                await update.message.reply_photo(
+                    photo=f,
+                    caption="💳 Quét QR để chuyển khoản\nSau đó dùng: /nap 1000"
+                )
+        else:
+            await update.message.reply_text("❌ Chưa có ảnh QR. Admin dùng /setqr để cập nhật.")
+    except Exception:
+        traceback.print_exc()
+        await update.message.reply_text("⚠️ Lỗi gửi ảnh QR.")
 
 async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = str(update.effective_user.id)
@@ -94,7 +98,7 @@ async def nap(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if os.path.exists(MY_QR_IMAGE):
             with open(MY_QR_IMAGE, "rb") as f:
                 await update.message.reply_photo(
-                    f,
+                    photo=f,
                     caption=f"✅ Đã tạo lệnh nạp {amount:,}đ\n⏳ Chờ admin duyệt."
                 )
 
@@ -105,12 +109,12 @@ async def nap(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await context.bot.send_message(
             ADMIN_ID,
-            f"📥 Yêu cầu nạp mới\nUser: {tag} ({uid})\nSố tiền: {amount:,}đ",
+            f"📥 Yêu cầu nạp\nUser: {tag} ({uid})\nSố tiền: {amount:,}đ",
             reply_markup=kb
         )
     except Exception:
         traceback.print_exc()
-        await update.message.reply_text("⚠️ Lỗi hệ thống khi tạo lệnh nạp.")
+        await update.message.reply_text("⚠️ Lỗi tạo lệnh nạp.")
 
 async def buyrd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = str(update.effective_user.id)
@@ -134,52 +138,62 @@ async def buyrd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_json(SOLD_FILE, sold)
 
     await update.message.reply_text(
-        f"✅ Mua thành công!\n\n👤 User: {acc['user']}\n🔑 Pass: {acc['pass']}"
+        f"✅ Mua thành công!\nUser: {acc['user']}\nPass: {acc['pass']}"
     )
 
 # ====== ADMIN ======
 async def addacc(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update):
-        return
+    if not is_admin(update): return
     try:
         u, p = " ".join(context.args).split("|", 1)
         stock = get_stock()
         stock.append({"user": u.strip(), "pass": p.strip()})
         save_json(STOCK_FILE, stock)
-        await update.message.reply_text(f"✅ Đã thêm tài khoản. Kho: {len(stock)}")
+        await update.message.reply_text(f"✅ Đã thêm. Kho: {len(stock)}")
     except:
-        await update.message.reply_text("❌ Cú pháp: /addacc user|pass")
+        await update.message.reply_text("❌ /addacc user|pass")
 
 async def setprice(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update):
-        return
+    if not is_admin(update): return
     try:
         new_price = int(context.args[0])
         save_json(PRICE_FILE, {"price": new_price})
         await update.message.reply_text(f"✅ Đã đổi giá: {new_price:,}đ")
     except:
-        await update.message.reply_text("❌ Cú pháp: /setprice 1000")
+        await update.message.reply_text("❌ /setprice 1000")
 
+# ====== FIX SETQR ======
 async def setqr(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update):
         return
-    if not update.message.photo:
-        return await update.message.reply_text("❌ Gửi ảnh kèm caption /setqr")
-    photo = await update.message.photo[-1].get_file()
-    await photo.download_to_drive(MY_QR_IMAGE)
-    await update.message.reply_text("✅ Đã cập nhật ảnh QR mới!")
 
-# ====== CALLBACK DUYỆT NẠP ======
+    # Bật chế độ chờ ảnh
+    if update.message.text and update.message.text.startswith("/setqr"):
+        context.user_data["wait_qr"] = True
+        return await update.message.reply_text("📷 Gửi ảnh QR tiếp theo để cập nhật.")
+
+    # Nhận ảnh QR
+    if update.message.photo and context.user_data.get("wait_qr"):
+        try:
+            photo = await update.message.photo[-1].get_file()
+            await photo.download_to_drive(MY_QR_IMAGE)
+            context.user_data["wait_qr"] = False
+            return await update.message.reply_text("✅ Đã cập nhật ảnh QR mới!")
+        except Exception:
+            traceback.print_exc()
+            return await update.message.reply_text("⚠️ Lỗi lưu ảnh QR.")
+
+# ====== CALLBACK ======
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if query.from_user.id != ADMIN_ID:
-        return await query.answer("Không có quyền!")
+        return await query.answer("Không có quyền")
 
     action, uid = query.data.split("|")
     pending = get_pending()
 
     if uid not in pending:
-        return await query.edit_message_text("❌ Lệnh không còn tồn tại.")
+        return await query.edit_message_text("❌ Lệnh không tồn tại")
 
     amount = pending[uid]["amount"]
 
@@ -188,10 +202,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         users[uid] = users.get(uid, 0) + amount
         save_json(USERS_FILE, users)
         await context.bot.send_message(uid, f"✅ Nạp thành công {amount:,}đ")
-        await query.edit_message_text(f"✅ Đã duyệt {amount:,}đ cho {uid}")
+        await query.edit_message_text("✅ Đã duyệt")
     else:
-        await context.bot.send_message(uid, "❌ Yêu cầu nạp bị từ chối.")
-        await query.edit_message_text(f"❌ Đã từ chối {uid}")
+        await context.bot.send_message(uid, "❌ Yêu cầu nạp bị từ chối")
+        await query.edit_message_text("❌ Đã từ chối")
 
     pending.pop(uid)
     save_json(PENDING_FILE, pending)
@@ -200,7 +214,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 if __name__ == "__main__":
     app = ApplicationBuilder().token(TOKEN).build()
 
-    # User
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("qr", send_qr))
     app.add_handler(CommandHandler("balance", balance))
@@ -208,12 +221,13 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("nap", nap))
     app.add_handler(CommandHandler("buyrd", buyrd))
 
-    # Admin
     app.add_handler(CommandHandler("addacc", addacc))
     app.add_handler(CommandHandler("setprice", setprice))
-    app.add_handler(MessageHandler(filters.PHOTO & filters.Caption("/setqr"), setqr))
 
-    # Callback
+    # SETQR FIX: nhận /setqr + nhận ảnh
+    app.add_handler(CommandHandler("setqr", setqr))
+    app.add_handler(MessageHandler(filters.PHOTO, setqr))
+
     app.add_handler(CallbackQueryHandler(handle_callback))
 
     print("🤖 BOT ĐÃ SẴN SÀNG!")
