@@ -1,5 +1,6 @@
 import logging
 import os
+import sys
 from keep_alive import keep_alive
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -10,11 +11,19 @@ from telegram.ext import (
     ContextTypes,
 )
 
-# ===== CONFIG =====
+# ===== LOAD TOKEN =====
 TOKEN = os.environ.get("6367532329:AAF2adu5gd0NewX7-OtDEhv_9R-k1eTw18c")
+
+if not TOKEN:
+    print("❌ TOKEN chưa được set trong Environment Variables!")
+    sys.exit(1)
+else:
+    print("✅ TOKEN loaded thành công")
+
+# ===== CONFIG =====
 ADMIN_ID = 5736655322  # đổi thành telegram id của bạn
 PRICE = 1000
-QR_IMAGE = "https://sf-static.upanhlaylink.com/img/image_202602230bdbd1a9f78746c2495358efcf16d07a.jpg"  # link QR trực tiếp
+QR_IMAGE = "https://i.postimg.cc/15GBkR9p/IMG-3073.png"
 
 STOCK_FILE = "stock.txt"
 SOLD_FILE = "sold.txt"
@@ -31,17 +40,15 @@ def is_admin_private(update: Update):
         and update.effective_chat.type == "private"
     )
 
-def is_admin(user_id):
-    return user_id == ADMIN_ID
-
 # ===== UTIL =====
 def load_balance():
     data = {}
     if os.path.exists(BALANCE_FILE):
         with open(BALANCE_FILE, "r") as f:
             for line in f:
-                user, money = line.strip().split("|")
-                data[int(user)] = int(money)
+                if "|" in line:
+                    user, money = line.strip().split("|")
+                    data[int(user)] = int(money)
     return data
 
 def save_balance(data):
@@ -67,16 +74,11 @@ def add_sold(acc):
 # ===== USER =====
 async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = load_balance()
-    user_id = update.effective_user.id
-    money = data.get(user_id, 0)
+    money = data.get(update.effective_user.id, 0)
     await update.message.reply_text(f"💰 Số dư: {money:,} VND")
 
-async def stockrd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    stock = get_stock()
-    await update.message.reply_text(f"📦 Còn lại: {len(stock)} RDP")
-
 async def nap(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if len(context.args) == 0:
+    if not context.args:
         await update.message.reply_text("Dùng: /nap 50000")
         return
 
@@ -91,8 +93,7 @@ async def nap(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     caption = (
         f"💳 NẠP {amount:,} VND\n\n"
-        f"📌 Quét QR bên dưới\n"
-        f"📌 Nội dung: {user_id}\n\n"
+        f"📌 Nội dung chuyển khoản: {user_id}\n"
         f"Chờ admin duyệt."
     )
 
@@ -114,9 +115,8 @@ async def nap(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def buyrd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     balances = load_balance()
     user_id = update.effective_user.id
-    money = balances.get(user_id, 0)
 
-    if money < PRICE:
+    if balances.get(user_id, 0) < PRICE:
         await update.message.reply_text("❌ Không đủ số dư.")
         return
 
@@ -132,19 +132,14 @@ async def buyrd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     balances[user_id] -= PRICE
     save_balance(balances)
 
-    await update.message.reply_text(
-        f"✅ Mua thành công!\n\n🖥 RDP:\n{acc}"
-    )
+    await update.message.reply_text(f"✅ Mua thành công!\n\n🖥 {acc}")
 
 # ===== ADMIN BUTTON =====
 async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    if query.from_user.id != ADMIN_ID:
-        return
-
-    if query.message.chat.type != "private":
+    if not is_admin_private(update):
         return
 
     action, user_id = query.data.split("_")
@@ -167,7 +162,7 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await query.edit_message_text("✅ Đã duyệt.")
 
-    elif action == "reject":
+    else:
         await context.bot.send_message(
             chat_id=user_id,
             text="❌ Yêu cầu bị từ chối."
@@ -176,34 +171,16 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     del PENDING_NAP[user_id]
 
-# ===== ADMIN COMMAND =====
-async def addacc(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin_private(update):
-        return
-
-    if len(context.args) == 0:
-        await update.message.reply_text("Dùng: /addacc user|pass")
-        return
-
-    acc = " ".join(context.args)
-    with open(STOCK_FILE, "a") as f:
-        f.write(acc + "\n")
-
-    await update.message.reply_text("✅ Đã thêm vào stock.")
-
 # ===== MAIN =====
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("balance", balance))
-    app.add_handler(CommandHandler("stockrd", stockrd))
     app.add_handler(CommandHandler("nap", nap))
     app.add_handler(CommandHandler("buyrd", buyrd))
-    app.add_handler(CommandHandler("addacc", addacc))
-
     app.add_handler(CallbackQueryHandler(handle_buttons))
 
-    print("Bot đang chạy...")
+    print("🚀 Bot đang chạy...")
     app.run_polling()
 
 if __name__ == "__main__":
