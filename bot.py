@@ -47,7 +47,7 @@ def is_admin(update: Update):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     price = get_price()
     msg = (
-        "🖥 HỆ THỐNG BÁN RDP\n\n"
+        "🖥 HỆ THỐNG BÁN liênQuân\n\n"
         "🔹 /qr - Xem QR nạp tiền\n"
         "🔹 /nap <số tiền>\n"
         "🔹 /balance\n"
