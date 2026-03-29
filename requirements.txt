@@ -5,7 +5,7 @@ requests
 pyrogram
 tgcrypto
 requests
-dotenv
+schedule
 telethon
 pytz
 aiohttp
